@@ -1,0 +1,61 @@
+cabal-version:
+  2.0
+name:
+  fast-downward
+version:
+  0.1.0.0
+build-type:
+  Simple
+synopsis:
+  Solve classical planning problems (STRIPS/SAS+) using Haskell & Fast Downward.
+description:
+  @fast-downward@ is a library for modelling classical planning problems and
+  solving them using the Fast Downward engine. For general usage, see
+  "FastDownward", and for an example see "FastDownward.Examples.Gripper".
+  .
+  Note that usage of this library requires the @downward@ executable - see
+  <http://www.fast-downward.org/ObtainingAndRunningFastDownward Obtaining and Running Fast Downward>
+  for more instructions.
+license:
+  BSD3
+license-file:
+  LICENSE
+extra-source-files:
+  Changelog.md
+maintainer:
+  Ollie Charles <ollie@ocharles.org.uk>
+category:
+  AI
+
+library
+  exposed-modules:
+    FastDownward
+    FastDownward.Examples.Gripper
+    FastDownward.Exec
+    FastDownward.SAS
+    FastDownward.SAS.Axiom
+    FastDownward.SAS.DomainIndex
+    FastDownward.SAS.Effect
+    FastDownward.SAS.Goal
+    FastDownward.SAS.MutexGroup
+    FastDownward.SAS.Operator
+    FastDownward.SAS.Plan
+    FastDownward.SAS.State
+    FastDownward.SAS.UseCosts
+    FastDownward.SAS.Variable
+    FastDownward.SAS.VariableAssignment
+    FastDownward.SAS.VariableIndex
+    FastDownward.SAS.Version
+  build-depends:
+    base         ^>= 4.11.1.0,
+    containers   ^>= 0.5.11.0,
+    list-t       ^>= 1.0.1,
+    mtl          ^>= 2.2.2,
+    process      ^>= 1.6.3.0,
+    temporary    ^>= 1.3,
+    text         ^>= 1.2.03.0,
+    transformers ^>= 0.5.5.0
+  default-language:
+    Haskell2010
+  ghc-options:
+    -Wall -fwarn-incomplete-uni-patterns
