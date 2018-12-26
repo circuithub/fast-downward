@@ -26,6 +26,16 @@ maintainer:
   Ollie Charles <ollie@ocharles.org.uk>
 category:
   AI
+homepage:
+  https://github.com/circuithub/fast-downward
+bug-reports:
+  https://github.com/circuithub/fast-downward/issues
+
+source-repository head
+  type:
+    git
+  location:
+    https://github.com/circuithub/fast-downward
 
 library
   exposed-modules:
