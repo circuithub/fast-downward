@@ -3,7 +3,7 @@ cabal-version:
 name:
   fast-downward
 version:
-  0.1.0.0
+  0.1.0.1
 build-type:
   Simple
 synopsis:
