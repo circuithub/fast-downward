@@ -460,8 +460,6 @@ solve cfg ops tests = do
     planFilePath <-
       liftIO ( emptySystemTempFile "sas_plan" )
 
-    liftIO ( putStrLn ( Data.Text.Lazy.unpack ( FastDownward.SAS.Plan.toSAS plan ) ) )
-
     ( exitCode, stdout, stderr ) <-
       liftIO
         ( Exec.callFastDownward
