@@ -49,7 +49,7 @@ module FastDownward
   where
 
 import Control.Applicative ( Alternative )
-import Control.Monad ( MonadPlus, mzero )
+import Control.Monad ( MonadPlus )
 import Control.Monad.Fail ( MonadFail )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Control.Monad.State.Class ( get, gets, modify )
