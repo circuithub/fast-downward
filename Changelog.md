@@ -1,5 +1,6 @@
 # Unreleased
 
+* Support `containers-0.6`.
 * Added `instance MonadFail Effect`
 * Bumped `base` upper bound to `< 4.13`
 * Bumped `list-t` lower bound to `>= 1.0.2` (this is necessary for internal
