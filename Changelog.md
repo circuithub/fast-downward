@@ -1,4 +1,4 @@
-# Unreleased
+# 0.1.1.0 -- 2019-01-09
 
 * Support `containers-0.6`.
 * Added `instance MonadFail Effect`
