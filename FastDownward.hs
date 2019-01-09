@@ -50,6 +50,7 @@ module FastDownward
 
 import Control.Applicative ( Alternative )
 import Control.Monad ( MonadPlus, mzero )
+import Control.Monad.Fail ( MonadFail )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Control.Monad.State.Class ( get, gets, modify )
 import Control.Monad.Trans.Class ( lift )
@@ -291,7 +292,7 @@ modifyVar v f =
 newtype Effect a =
   Effect { runEffect :: StateT EffectState ( ListT IO ) a }
   deriving
-    ( Functor, Applicative, Alternative, MonadPlus )
+    ( Functor, Applicative, Alternative, MonadPlus, MonadFail )
 
 
 instance Monad Effect where
