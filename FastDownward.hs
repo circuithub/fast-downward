@@ -304,7 +304,18 @@ modifyVar v f =
 newtype Effect a =
   Effect { runEffect :: StateT EffectState ( ListT IO ) a }
   deriving
-    ( Functor, Applicative, Alternative, MonadPlus, MonadFail, Monad )
+    ( Functor, Applicative, Alternative, MonadPlus, MonadFail )
+
+
+instance Monad Effect where
+  return =
+    pure
+
+  Effect a >>= f =
+    Effect ( a >>= runEffect . f )
+
+  fail _ =
+    Effect ( lift mzero )
 
 
 -- | Used to track the evaluation of an 'Effect' as we enumerate all possible
