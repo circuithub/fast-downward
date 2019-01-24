@@ -514,7 +514,7 @@ solve cfg ops tests = do
                       , effects =
                           map
                             ( \( v, ( post, _ ) ) -> FastDownward.SAS.Effect v Nothing post )
-                            ( Map.toList ( writes `Map.difference` reads ) )
+                            ( Map.toList ( Map.difference writes reads ) )
                             ++
                               Map.elems
                                 ( Map.intersectionWithKey
