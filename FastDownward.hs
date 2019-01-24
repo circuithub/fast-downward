@@ -49,7 +49,7 @@ module FastDownward
   where
 
 import Control.Applicative ( Alternative )
-import Control.Monad ( MonadPlus )
+import Control.Monad ( MonadPlus, mzero )
 import Control.Monad.Fail ( MonadFail )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Control.Monad.State.Class ( get, gets, modify )
@@ -221,7 +221,10 @@ writeVar var a = Effect $ do
     ( \es ->
         es
           { writes =
-              Map.insert ( variableIndex var ) domainIndex ( writes es )
+              Map.insert
+                ( variableIndex var )
+                ( domainIndex, unsafeCoerce a )
+                ( writes es )
           }
     )
 
@@ -238,19 +241,28 @@ readVar var = Effect $ do
   -- and run the continuation with all values. However, in this continuation a
   -- subsquent read from v1 should be stable - that is, deterministic. This
   -- is done by consulting the 'reads' map of prior reads first.
+  -- Furthermore, if this variable has been written too, we re-read the last
+  -- write.
   currentValues <-
     liftIO ( readIORef ( values var ) )
 
   mPrevRead <-
     gets ( Map.lookup ( variableIndex var ) . reads )
 
-  case mPrevRead of
-    Just ( _, prevRead ) ->
+  mPrevWrite <-
+    gets ( Map.lookup ( variableIndex var ) . writes )
+
+  case ( mPrevWrite, mPrevRead ) of
+    ( Just ( _, prevWrite ), _ ) ->
+      -- We've written this variable, so continue with what we last wrote.
+      return ( unsafeCoerce prevWrite )
+
+    ( Nothing, Just ( _, prevRead ) ) ->
       -- We've seen this variable before, so just continue with it.
       return ( unsafeCoerce prevRead )
 
-    Nothing -> do
-      -- We have never read this variable before, non-deterministically
+    ( Nothing, Nothing ) -> do
+      -- We have never seen this variable before, non-deterministically
       -- enumerate all possible values.
       ( value, domainIndex ) <-
         lift ( fromFoldable ( Map.toList currentValues ) )
@@ -292,7 +304,18 @@ modifyVar v f =
 newtype Effect a =
   Effect { runEffect :: StateT EffectState ( ListT IO ) a }
   deriving
-    ( Functor, Applicative, Alternative, MonadPlus, MonadFail, Monad )
+    ( Functor, Applicative, Alternative, MonadPlus, MonadFail )
+
+
+instance Monad Effect where
+  return =
+    pure
+
+  Effect a >>= f =
+    Effect ( a >>= runEffect . f )
+
+  fail _ =
+    Effect ( lift mzero )
 
 
 -- | Used to track the evaluation of an 'Effect' as we enumerate all possible
@@ -301,7 +324,7 @@ data EffectState =
   EffectState
     { reads :: !( Map FastDownward.SAS.VariableIndex ( FastDownward.SAS.DomainIndex, Any ) )
       -- ^ The variables and their exact values read to reach a certain outcome.
-    , writes :: !( Map FastDownward.SAS.VariableIndex FastDownward.SAS.DomainIndex )
+    , writes :: !( Map FastDownward.SAS.VariableIndex ( FastDownward.SAS.DomainIndex, Any ) )
       -- ^ The changes made by this instance.
     }
 
@@ -428,7 +451,7 @@ solve cfg ops tests = do
                             )
                       , effects =
                           map
-                            ( \( v, post ) -> FastDownward.SAS.Effect v Nothing post )
+                            ( \( v, ( post, _ ) ) -> FastDownward.SAS.Effect v Nothing post )
                             ( Map.toList ( Map.difference writes reads ) )
                             ++
                               Map.elems
@@ -437,7 +460,7 @@ solve cfg ops tests = do
                                         FastDownward.SAS.Effect v ( Just pre ) post
                                     )
                                     ( fst <$> reads )
-                                    writes
+                                    ( fst <$> writes )
                                 )
                       }
                 )
@@ -525,7 +548,7 @@ fixEffects ops =
         newWrites =
           Map.unionsWith
             Set.union
-            ( map ( fmap Set.singleton . writes . snd ) es )
+            ( map ( fmap ( Set.singleton . fst ) . writes . snd ) es )
 
       if previousWrites == newWrites
         then return es
