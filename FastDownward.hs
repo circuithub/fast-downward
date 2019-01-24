@@ -48,13 +48,16 @@ module FastDownward
   )
   where
 
-import Control.Applicative ( Alternative )
-import Control.Monad ( MonadPlus, mzero )
-import Control.Monad.Fail ( MonadFail )
+import Control.Applicative ( Alternative(..) )
+import Control.Monad ( void )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Control.Monad.State.Class ( get, gets, modify )
 import Control.Monad.Trans.Class ( lift )
-import Control.Monad.Trans.State.Strict ( StateT(..), evalStateT, runStateT )
+import Control.Monad.Trans.Cont
+import Control.Monad.Trans.Maybe
+import Control.Monad.Trans.Reader ( ReaderT(..), runReaderT )
+import Control.Monad.Trans.State.Strict ( StateT, evalStateT )
+import Control.Monad.Reader.Class ( asks, local )
 import qualified Data.Foldable
 import qualified Data.Graph
 import Data.IORef
@@ -65,7 +68,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe ( mapMaybe )
 import Data.Sequence ( Seq )
 import qualified Data.Sequence as Seq
-import qualified Data.Set as Set
 import Data.String ( fromString )
 import qualified Data.Text.Lazy
 import qualified Data.Text.Lazy.IO
@@ -78,7 +80,6 @@ import qualified FastDownward.SAS.Operator
 import qualified FastDownward.SAS.Plan
 import qualified FastDownward.SAS.Variable
 import GHC.Exts ( Any )
-import ListT ( ListT, fromFoldable, toList )
 import Prelude hiding ( reads )
 import System.Exit
 import System.IO.Temp
@@ -95,6 +96,10 @@ data Var a =
     , values :: {-# UNPACK #-} !( IORef ( Map a FastDownward.SAS.DomainIndex ) )
       -- ^ Map Haskell values to the index in the domain in the SAS
       -- representation.
+    , subscribed :: IORef ( ( a, FastDownward.SAS.DomainIndex ) -> IO () )
+      -- ^ A mutable callback to invoke whenever a new value is written to
+      -- this variable. This allows other 'Effect's that read this @Var@ to be
+      -- re-evaluated.
     }
 
 
@@ -167,6 +172,9 @@ newVarAt axiomLayer initialValue = do
   variableIndex <-
     freshIndex
 
+  subscribed <-
+    liftIO ( newIORef ( \_ -> return () ) )
+
   let
     enumerate =
       Map.elems <$> readIORef values
@@ -210,26 +218,45 @@ writeVar var a = Effect $ do
   -- there's not much to do - we've already considered this assignment.
   --
   -- If the value is new, we record that this write invalidated a Var, which
-  -- will cause fixEffects to run again.
+  -- will cause exhaustEffects to run again.
   currentValues <-
     liftIO ( readIORef ( values var ) )
 
   domainIndex <-
-    maybe ( observeValue var a ) return ( Map.lookup a currentValues )
+    case Map.lookup a currentValues of
+      Nothing -> do
+        -- We've never seen this value before, first observe it to obtain
+        -- its domain index.
+        domainIndex <-
+          observeValue var a
 
-  modify
-    ( \es ->
-        es
-          { writes =
-              Map.insert
-                ( variableIndex var )
-                ( domainIndex, unsafeCoerce a )
-                ( writes es )
-          }
+        -- Now notify anyone who had already read this variable that there's
+        -- a new value.
+        notify <-
+          liftIO ( readIORef ( subscribed var ) )
+
+        liftIO ( notify ( a, domainIndex ) )
+
+        return domainIndex
+
+      Just domainIndex ->
+        return domainIndex
+
+  -- Invoke the remaining continuation, but record the read.
+  callCC
+    ( \k ->
+        local
+        ( \es ->
+            es
+              { writes =
+                  Map.insert
+                    ( variableIndex var )
+                    ( domainIndex, unsafeCoerce a )
+                    ( writes es )
+              }
+        )
+        ( k () )
     )
-
-  return () -- TODO Record a read for this write for consistency, but it
-            -- avoid it being part of the actual operator.
 
 
 -- | Read the value of a 'Var' at the point the 'Effect' is invoked by the
@@ -247,10 +274,10 @@ readVar var = Effect $ do
     liftIO ( readIORef ( values var ) )
 
   mPrevRead <-
-    gets ( Map.lookup ( variableIndex var ) . reads )
+    asks ( Map.lookup ( variableIndex var ) . reads )
 
   mPrevWrite <-
-    gets ( Map.lookup ( variableIndex var ) . writes )
+    asks ( Map.lookup ( variableIndex var ) . writes )
 
   case ( mPrevWrite, mPrevRead ) of
     ( Just ( _, prevWrite ), _ ) ->
@@ -262,24 +289,34 @@ readVar var = Effect $ do
       return ( unsafeCoerce prevRead )
 
     ( Nothing, Nothing ) -> do
-      -- We have never seen this variable before, non-deterministically
-      -- enumerate all possible values.
-      ( value, domainIndex ) <-
-        lift ( fromFoldable ( Map.toList currentValues ) )
+      -- We have never seen this variable before.
 
-      -- Record this read.
-      modify
-        ( \es ->
-            es
-              { reads =
-                  Map.insert
-                    ( variableIndex var )
-                    ( domainIndex, unsafeCoerce value )
-                    ( reads es )
-              }
-        )
+      -- Capture the current continuation, which will be re-invoked whenever
+      -- new values are written to this @Var@.
+      ContT $ \k -> lift $ ReaderT $ \es -> do
+        let
+          runRecordingRead ( a, domainIndex ) =
+            runReaderT
+              ( runMaybeT ( k a ) )
+              es
+                { reads =
+                    Map.insert
+                      ( variableIndex var )
+                      ( domainIndex, unsafeCoerce a )
+                      ( reads es )
+                }
 
-      return value
+        -- First, subscribe to any new writes. This has to be done first because
+        -- yielding known values could immediately cause a write to happen
+        -- (e.g., in the case of using modifyVar = readVar v >>= writeVar . f).
+        liftIO
+          ( modifyIORef
+              ( subscribed var )
+              ( \io r -> io r >> void ( runRecordingRead r ) )
+          )
+
+        -- Now enumerate all known reads.
+        Data.Foldable.for_ ( Map.toList currentValues ) runRecordingRead
 
 
 -- | Modify the contents of a 'Var' by using a function.
@@ -302,20 +339,29 @@ modifyVar v f =
 -- read the current location, and 'guard' to guard that this location is
 -- adjacent to our goal.
 newtype Effect a =
-  Effect { runEffect :: StateT EffectState ( ListT IO ) a }
+  Effect { runEffect :: ContT () ( MaybeT ( ReaderT EffectState IO ) ) a }
   deriving
-    ( Functor, Applicative, Alternative, MonadPlus, MonadFail )
+    ( Functor, Applicative )
 
 
 instance Monad Effect where
   return =
-    pure
+    Effect . return
 
-  Effect a >>= f =
-    Effect ( a >>= runEffect . f )
+  Effect a >>= f = Effect $
+    a >>= runEffect . f
 
   fail _ =
-    Effect ( lift mzero )
+    empty
+
+
+instance Alternative Effect where
+  empty =
+    Effect ( ContT ( \_k -> empty ) )
+
+  Effect a <|> Effect b =
+    Effect $ ContT $ \k ->
+      runContT a k <|> runContT b k
 
 
 -- | Used to track the evaluation of an 'Effect' as we enumerate all possible
@@ -388,7 +434,7 @@ solve cfg ops tests = do
     -- Now that we've observed every value we know up-front, find the fixed point
     -- of the set of operators.
     operators <-
-      liftIO ( fixEffects ops )
+      liftIO ( exhaustEffects ops )
 
     initialState <-
       gets initialState
@@ -521,38 +567,30 @@ solve cfg ops tests = do
           )
 
 
-fixEffects
+exhaustEffects
   :: Traversable t
   => t ( Effect a )
   -> IO [ ( a, EffectState ) ]
-fixEffects ops =
-  go mempty
+exhaustEffects ops = do
+  out <-
+    -- Every 'Effect' branch will eventually write it's output here.
+    newIORef []
 
-  where
-
-    go previousWrites = do
-      es <-
-        fmap
-          concat
-          ( for ops
-              ( \effect ->
-                  toList
-                    ( runStateT
-                        ( runEffect effect )
-                        ( EffectState mempty mempty )
-                    )
+  Data.Foldable.for_
+    ops
+    ( \( Effect ( ContT k ) ) ->
+        runReaderT
+          ( runMaybeT
+              ( k
+                  ( \a ->
+                      lift ( ReaderT ( \es -> modifyIORef out ( ( a, es ) : ) ) )
+                  )
               )
           )
+          ( EffectState mempty mempty)
+    )
 
-      let
-        newWrites =
-          Map.unionsWith
-            Set.union
-            ( map ( fmap ( Set.singleton . fst ) . writes . snd ) es )
-
-      if previousWrites == newWrites
-        then return es
-        else go newWrites
+  readIORef out
 
 
 -- | Leave the 'Problem' monad by running the given computation to 'IO'.
