@@ -487,13 +487,29 @@ solve cfg ops tests = do
           , operators =
               zipWith
                 ( \i ( _, EffectState{ reads, writes } ) ->
+                    let
+                      unchangedWrites =
+                        Map.differenceWith
+                          ( \a b -> if fst a == fst b then Just a else Nothing )
+                          writes
+                          reads
+
+                      actualWrites =
+                        writes `Map.difference` unchangedWrites
+
+                    in
                     FastDownward.SAS.Operator
                       { name = fromString ( "op" <> show i )
                       , prevail =
                           map
                             ( uncurry FastDownward.SAS.VariableAssignment )
                             ( Map.toList
-                                ( fst <$> Map.difference reads writes )
+                                ( fmap
+                                    fst
+                                    ( Map.difference reads writes
+                                        <> unchangedWrites
+                                    )
+                                )
                             )
                       , effects =
                           map
@@ -506,7 +522,7 @@ solve cfg ops tests = do
                                         FastDownward.SAS.Effect v ( Just pre ) post
                                     )
                                     ( fst <$> reads )
-                                    ( fst <$> writes )
+                                    ( fst <$> actualWrites )
                                 )
                       }
                 )
