@@ -50,14 +50,15 @@ module FastDownward
 
 import Control.Applicative ( Alternative(..) )
 import Control.Monad ( void )
+import qualified Control.Monad.Fail
 import Control.Monad.IO.Class ( MonadIO, liftIO )
+import Control.Monad.Reader.Class ( asks, local )
 import Control.Monad.State.Class ( get, gets, modify )
 import Control.Monad.Trans.Class ( lift )
 import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Reader ( ReaderT(..), runReaderT )
 import Control.Monad.Trans.State.Strict ( StateT, evalStateT )
-import Control.Monad.Reader.Class ( asks, local )
 import qualified Data.Foldable
 import qualified Data.Graph
 import Data.IORef
@@ -351,6 +352,11 @@ instance Monad Effect where
   Effect a >>= f = Effect $
     a >>= runEffect . f
 
+  fail =
+    Control.Monad.Fail.fail
+
+
+instance Control.Monad.Fail.MonadFail Effect where
   fail _ =
     empty
 
