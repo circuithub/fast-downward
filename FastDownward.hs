@@ -495,10 +495,9 @@ solve cfg ops tests = do
                 ( \i ( _, EffectState{ reads, writes } ) ->
                     let
                       unchangedWrites =
-                        Map.differenceWith
-                          ( \a b -> if fst a == fst b then Just a else Nothing )
-                          writes
-                          reads
+                        Map.mapMaybe
+                          ( \( a, b ) -> if fst a == fst b then Just a else Nothing )
+                          ( Map.intersectionWith (,) writes reads )
 
                       actualWrites =
                         writes `Map.difference` unchangedWrites
