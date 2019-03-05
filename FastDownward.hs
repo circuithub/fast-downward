@@ -1,6 +1,7 @@
 {-# language FlexibleContexts #-}
 {-# language GADTs #-}
 {-# language GeneralizedNewtypeDeriving #-}
+{-# language LambdaCase #-}
 {-# language NamedFieldPuns #-}
 {-# language OverloadedStrings #-}
 {-# language RecordWildCards #-}
@@ -35,6 +36,7 @@ module FastDownward
   , Test
   , (?=)
   , FastDownward.any
+  , requiresAxioms
 
     -- * Solving Problems
   , solve
@@ -632,6 +634,16 @@ runProblem p = liftIO $
 data Test where
   TestEq :: Ord a => {-# UNPACK #-} !( Var a ) -> !a -> Test
   Any :: ![ Test ] -> Test
+
+
+requiresAxioms :: Test -> Bool
+requiresAxioms =
+  \case
+    TestEq{} ->
+      False
+
+    Any{} ->
+      True
 
 
 -- | Reset the initial state of a variable (the value that the solver will begin
