@@ -96,7 +96,7 @@ data Var a =
   Var
     { variableIndex :: {-# UNPACK #-} !FastDownward.SAS.VariableIndex
       -- ^ The SAS variable index of this variable.
-    , values :: {-# UNPACK #-} !( IORef ( Map a FastDownward.SAS.DomainIndex ) )
+    , values :: {-# UNPACK #-} !( IORef ( Map a ( Committed FastDownward.SAS.DomainIndex ) ) )
       -- ^ Map Haskell values to the index in the domain in the SAS
       -- representation.
     , subscribed :: IORef ( ( a, FastDownward.SAS.DomainIndex ) -> IO () )
@@ -104,6 +104,30 @@ data Var a =
       -- this variable. This allows other 'Effect's that read this @Var@ to be
       -- re-evaluated.
     }
+
+
+data Committed a =
+  Committed a | Uncommited a
+
+
+getCommitted :: Committed a -> a
+getCommitted c =
+  case c of
+    Committed a ->
+      a
+
+    Uncommited a ->
+      a
+
+
+fromCommitted :: Committed a -> Maybe a
+fromCommitted c =
+  case c of
+    Committed a ->
+      Just a
+
+    Uncommited _ ->
+      Nothing
 
 
 -- | The @Problem@ monad is used to build a computation that describes a
@@ -147,14 +171,19 @@ observeValue var a = liftIO $ do
 
   case Map.lookup a vs of
     Just i ->
-      return i
+      return ( getCommitted i )
 
     Nothing -> do
       let
         i =
           FastDownward.SAS.DomainIndex ( Map.size vs )
 
-      i <$ modifyIORef' ( values var ) ( Map.insert a i )
+      i <$ modifyIORef' ( values var ) ( Map.insert a ( Uncommited i ) )
+
+
+commitValue :: ( Ord a, MonadIO m ) => Var a -> a -> m ()
+commitValue var a = liftIO $ do
+  modifyIORef' ( values var ) ( Map.adjust ( Committed . getCommitted ) a )
 
 
 -- | Introduce a new state variable into a problem, and set it to an initial
@@ -180,7 +209,7 @@ newVarAt axiomLayer initialValue = do
 
   let
     enumerate =
-      Map.elems <$> readIORef values
+      map getCommitted . Map.elems <$> readIORef values
 
     var =
       Var{..}
@@ -188,6 +217,8 @@ newVarAt axiomLayer initialValue = do
   -- Observe the initial value...
   initialI <-
     liftIO ( observeValue var initialValue )
+
+  liftIO ( commitValue var initialValue )
 
   -- ... and record it in the ProblemState.
   Problem
@@ -225,7 +256,7 @@ writeVar var a = Effect $ do
   currentValues <-
     liftIO ( readIORef ( values var ) )
 
-  domainIndex <-
+  ( domainIndex, later ) <-
     case Map.lookup a currentValues of
       Nothing -> do
         -- We've never seen this value before, first observe it to obtain
@@ -233,17 +264,22 @@ writeVar var a = Effect $ do
         domainIndex <-
           observeValue var a
 
-        -- Now notify anyone who had already read this variable that there's
-        -- a new value.
-        notify <-
-          liftIO ( readIORef ( subscribed var ) )
+        return
+          ( Uncommited domainIndex
+          , do
+              -- This write succeeded, commit it.
+              commitValue var a
+              
+              -- Now notify anyone who had already read this variable that there's
+              -- a new value.
+              notify <-
+                readIORef ( subscribed var )
 
-        liftIO ( notify ( a, domainIndex ) )
-
-        return domainIndex
+              notify ( a, domainIndex )
+          )
 
       Just domainIndex ->
-        return domainIndex
+        return ( domainIndex, return () )
 
   -- Invoke the remaining continuation, but record the read.
   callCC
@@ -254,8 +290,10 @@ writeVar var a = Effect $ do
               { writes =
                   Map.insert
                     ( variableIndex var )
-                    ( domainIndex, unsafeCoerce a )
+                    ( getCommitted domainIndex, unsafeCoerce a )
                     ( writes es )
+              , onCommit =
+                  later >> onCommit es
               }
         )
         ( k () )
@@ -315,11 +353,16 @@ readVar var = Effect $ do
         liftIO
           ( modifyIORef
               ( subscribed var )
-              ( \io r -> io r >> void ( runRecordingRead r ) )
+              ( \io r -> void ( runRecordingRead r ) >> io r )
           )
 
         -- Now enumerate all known reads.
-        Data.Foldable.for_ ( Map.toList currentValues ) runRecordingRead
+        Data.Foldable.for_
+          ( mapMaybe
+              ( \( k, v ) -> fmap ( \v' -> ( k, v' ) ) ( fromCommitted v ) )
+              ( Map.toList currentValues )
+          )
+          runRecordingRead
 
 
 -- | Modify the contents of a 'Var' by using a function.
@@ -380,6 +423,7 @@ data EffectState =
       -- ^ The variables and their exact values read to reach a certain outcome.
     , writes :: !( Map FastDownward.SAS.VariableIndex ( FastDownward.SAS.DomainIndex, Any ) )
       -- ^ The changes made by this instance.
+    , onCommit :: IO ()
     }
 
 
@@ -606,11 +650,14 @@ exhaustEffects ops = do
           ( runMaybeT
               ( k
                   ( \a ->
-                      lift ( ReaderT ( \es -> modifyIORef out ( ( a, es ) : ) ) )
+                      lift $ ReaderT $ \es -> do
+                        onCommit es
+                      
+                        modifyIORef out ( ( a, es ) : )
                   )
               )
           )
-          ( EffectState mempty mempty)
+          ( EffectState mempty mempty ( return () ) )
     )
 
   readIORef out
@@ -653,6 +700,8 @@ resetInitial var a = do
   i <-
     liftIO ( observeValue var a )
 
+  commitValue var a
+
   Problem $ modify $ \ps ->
     ps
       { initialState =
@@ -676,7 +725,7 @@ any =
 testToVariableAssignment :: Test -> Problem FastDownward.SAS.VariableAssignment
 testToVariableAssignment ( TestEq var a ) =
   FastDownward.SAS.VariableAssignment ( variableIndex var )
-    <$> liftIO ( observeValue var a )
+    <$> liftIO ( observeValue var a >>= \i -> commitValue var a >> return i )
 
 testToVariableAssignment ( Any tests ) = do
   axiom <-
@@ -687,6 +736,8 @@ testToVariableAssignment ( Any tests ) = do
 
   trueI <-
     liftIO ( observeValue axiom True )
+
+  liftIO ( Data.Foldable.traverse_ ( commitValue axiom ) [ False, True ] )
 
   assigns <-
     Prelude.traverse testToVariableAssignment tests
