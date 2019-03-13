@@ -2,7 +2,7 @@
 
 module FastDownward.SAS.UseCosts ( UseCosts(..), toSAS ) where
 
-import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.Builder
 
 
 data UseCosts =
@@ -11,16 +11,13 @@ data UseCosts =
     ( Show )
 
 
-toSAS :: UseCosts -> Data.Text.Lazy.Text
+toSAS :: UseCosts -> Data.Text.Lazy.Builder.Builder
 toSAS a =
-  Data.Text.Lazy.intercalate
-    "\n"
-    [ "begin_metric"
-    , case a of
-        NoCosts ->
-          "0"
+     "begin_metric\n"
+  <> case a of
+      NoCosts ->
+        "0\n"
 
-        UseCosts ->
-          "1"
-    , "end_metric"
-    ]
+      UseCosts ->
+        "1\n"
+  <> "end_metric"

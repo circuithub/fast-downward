@@ -3,7 +3,7 @@
 
 module FastDownward.SAS.Effect ( Effect(..), toSAS ) where
 
-import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.Builder
 import FastDownward.SAS.DomainIndex ( DomainIndex )
 import qualified FastDownward.SAS.DomainIndex as DomainIndex
 import FastDownward.SAS.VariableIndex ( VariableIndex )
@@ -20,17 +20,16 @@ data Effect =
     ( Eq, Ord, Show )
 
 
-toSAS :: Effect -> Data.Text.Lazy.Text
+toSAS :: Effect -> Data.Text.Lazy.Builder.Builder
 toSAS Effect{..} =
-  Data.Text.Lazy.intercalate
-    " "
-    [ "0"
-    , VariableIndex.toSAS variable
-    , case pre of
-        Nothing ->
-          "-1"
+     "0"
+  <> " "
+  <> VariableIndex.toSAS variable <> " "
+  <> case pre of
+      Nothing ->
+        "-1"
 
-        Just x ->
-          DomainIndex.toSAS x
-    , DomainIndex.toSAS post
-    ]
+      Just x ->
+        DomainIndex.toSAS x
+  <> " "
+  <> DomainIndex.toSAS post

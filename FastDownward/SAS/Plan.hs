@@ -3,9 +3,11 @@
 
 module FastDownward.SAS.Plan ( Plan(..), toSAS ) where
 
-import Data.Function ( (&) )
-import Data.String ( fromString )
 import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.Builder
+import qualified Data.Text.Lazy.Builder.Int
+import Data.Sequence ( Seq )
+import qualified Data.Sequence as Seq
 import FastDownward.SAS.Axiom ( Axiom )
 import qualified FastDownward.SAS.Axiom as Axiom
 import FastDownward.SAS.Goal ( Goal )
@@ -27,12 +29,12 @@ data Plan =
   Plan
     { version :: Version
     , useCosts :: UseCosts
-    , variables :: [ Variable ]
-    , mutexGroups :: [ MutexGroup ]
+    , variables :: Seq Variable
+    , mutexGroups :: Seq MutexGroup
     , initialState :: State
     , goal :: Goal
-    , operators :: [ Operator ]
-    , axioms :: [ Axiom ]
+    , operators :: Seq Operator
+    , axioms :: Seq Axiom
     }
   deriving
     ( Show )
@@ -40,18 +42,15 @@ data Plan =
 
 toSAS :: Plan -> Data.Text.Lazy.Text
 toSAS Plan{..} =
-  [ Version.toSAS version
-  , UseCosts.toSAS useCosts
-  , fromString ( show ( length variables ) )
-  , Data.Text.Lazy.intercalate "\n" ( map Variable.toSAS variables )
-  , fromString ( show ( length mutexGroups ) )
-  , Data.Text.Lazy.intercalate "\n" [] -- ( map MutexGroup.toSAS mutexGroups )
-  , State.toSAS initialState
-  , Goal.toSAS goal
-  , fromString ( show ( length operators ) )
-  , Data.Text.Lazy.intercalate "\n" ( map Operator.toSAS operators )
-  , fromString ( show ( length axioms ) )
-  , Data.Text.Lazy.intercalate "\n" ( map Axiom.toSAS axioms )
-  ]
-    & filter ( not . Data.Text.Lazy.null )
-    & Data.Text.Lazy.intercalate "\n"
+     Data.Text.Lazy.Builder.toLazyText
+   $ Version.toSAS version                                        <> "\n"
+  <> UseCosts.toSAS useCosts                                       <> "\n"
+  <> Data.Text.Lazy.Builder.Int.decimal ( Seq.length variables )   <> "\n"
+  <> foldMap ( \v -> Variable.toSAS v <> "\n" ) variables
+  <> Data.Text.Lazy.Builder.Int.decimal ( Seq.length mutexGroups ) <> "\n"
+  <> State.toSAS initialState                                      <> "\n"
+  <> Goal.toSAS goal                                               <> "\n"
+  <> Data.Text.Lazy.Builder.Int.decimal ( Seq.length operators )   <> "\n"
+  <> foldMap ( \x -> Operator.toSAS x <> "\n" ) operators
+  <> Data.Text.Lazy.Builder.Int.decimal ( Seq.length axioms )      <> "\n"
+  <> foldMap ( \x -> Axiom.toSAS x <> "\n" ) axioms

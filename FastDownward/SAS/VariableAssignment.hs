@@ -2,7 +2,7 @@
 
 module FastDownward.SAS.VariableAssignment ( VariableAssignment(..), toSAS ) where
 
-import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.Builder
 import FastDownward.SAS.DomainIndex ( DomainIndex )
 import qualified FastDownward.SAS.DomainIndex as DomainIndex
 import FastDownward.SAS.VariableIndex ( VariableIndex )
@@ -15,6 +15,6 @@ data VariableAssignment =
     ( Eq, Ord, Show )
 
 
-toSAS :: VariableAssignment -> Data.Text.Lazy.Text
+toSAS :: VariableAssignment -> Data.Text.Lazy.Builder.Builder
 toSAS ( VariableAssignment x y ) =
   VariableIndex.toSAS x <> " " <> DomainIndex.toSAS y

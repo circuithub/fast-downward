@@ -3,9 +3,11 @@
 
 module FastDownward.SAS.Operator ( Operator(..), toSAS ) where
 
-import Data.Function ( (&) )
-import Data.String ( fromString )
+import Data.Sequence ( Seq )
+import qualified Data.Sequence as Seq
 import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.Builder
+import qualified Data.Text.Lazy.Builder.Int
 import FastDownward.SAS.Effect ( Effect )
 import qualified FastDownward.SAS.Effect as Effect
 import FastDownward.SAS.VariableAssignment ( VariableAssignment )
@@ -15,23 +17,20 @@ import qualified FastDownward.SAS.VariableAssignment as VariableAssignment
 data Operator =
   Operator
     { name :: Data.Text.Lazy.Text
-    , prevail :: [ VariableAssignment ]
-    , effects :: [ Effect ]
+    , prevail :: Seq VariableAssignment
+    , effects :: Seq Effect
     }
   deriving
     ( Show )
 
 
-toSAS :: Operator -> Data.Text.Lazy.Text
+toSAS :: Operator -> Data.Text.Lazy.Builder.Builder
 toSAS Operator{..} =
-  [ "begin_operator"
-  , name
-  , fromString ( show ( length prevail ) )
-  , Data.Text.Lazy.intercalate "\n" ( map VariableAssignment.toSAS prevail )
-  , fromString ( show ( length effects ) )
-  , Data.Text.Lazy.intercalate "\n" ( map Effect.toSAS effects )
-  , "0"
-  , "end_operator"
-  ]
-    & filter ( not . Data.Text.Lazy.null )
-    & Data.Text.Lazy.intercalate "\n"
+     "begin_operator\n"
+  <> Data.Text.Lazy.Builder.fromLazyText name <> "\n"
+  <> Data.Text.Lazy.Builder.Int.decimal ( Seq.length prevail ) <> "\n"
+  <> foldMap ( \x -> VariableAssignment.toSAS x <> "\n" ) prevail
+  <> Data.Text.Lazy.Builder.Int.decimal ( length effects ) <> "\n"
+  <> foldMap ( \x -> Effect.toSAS x <> "\n" ) effects
+  <> "0\n"
+  <> "end_operator"
