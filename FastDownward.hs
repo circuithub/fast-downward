@@ -245,52 +245,47 @@ writeVar var a = Effect $ do
       Just ( _, domainIndex ) ->
         return ( Right domainIndex )
 
-  case edomainIndex of
-    Left domainIndex -> do
-      -- We just discovered a new value, so we'll broadcast this.
-      laterRef <-
-        liftIO $ newIORef $ do
-          commit var a
+  callCC $ \k ->
+    case edomainIndex of
+      Left domainIndex -> do
+        -- We just discovered a new value, so we'll broadcast this.
+        laterRef <-
+          liftIO $ newIORef $ do
+            commit var a
 
-          notify <-
-            readIORef ( subscribed var )
+            notify <-
+              readIORef ( subscribed var )
 
-          notify a domainIndex
+            notify a domainIndex
 
-      callCC
-        ( \k ->
-            local
-            ( \es ->
-                es
-                  { writes =
-                      Map.insert ( variableIndex var ) domainIndex ( writes es )
-                  , onCommit = do
-                      action <-
-                        readIORef laterRef
+        local
+          ( \es ->
+              es
+                { writes =
+                    Map.insert ( variableIndex var ) domainIndex ( writes es )
+                , onCommit = do
+                    action <-
+                      readIORef laterRef
 
-                      writeIORef laterRef ( return () )
+                    writeIORef laterRef ( return () )
 
-                      action
+                    action
 
-                      onCommit es
-                  }
-            )
-            ( k () )
-        )
+                    onCommit es
+                }
+          )
+          ( k () )
 
-    Right domainIndex ->
-      -- This is not a new value, so just record it and continue.
-      callCC
-        ( \k ->
-            local
-            ( \es ->
-                es
-                  { writes =
-                      Map.insert ( variableIndex var ) domainIndex ( writes es )
-                  }
-            )
-            ( k () )
-        )
+      Right domainIndex ->
+        -- This is not a new value, so just record it and continue.
+        local
+          ( \es ->
+              es
+                { writes =
+                    Map.insert ( variableIndex var ) domainIndex ( writes es )
+                }
+          )
+          ( k () )
 
 
 -- | Read the value of a 'Var' at the point the 'Effect' is invoked by the
@@ -326,18 +321,16 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
 
       runReaderT ( k prevRead ) es
 
-    ( Nothing, Nothing ) -> {-# SCC "NothingNothing" #-} do
+    ( Nothing, Nothing ) -> do
       -- We have never seen this variable before.
       let
         runRecordingRead a domainIndex =
-          {-# SCC runRecordingRead #-}
           runReaderT
             ( k a )
-            ( {-# SCC es #-} es
+            es
               { reads =
                   Map.insert ( variableIndex var ) domainIndex ( reads es )
               }
-            )
 
       currentValues <-
         readIORef ( values var )
@@ -350,13 +343,11 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
         ( \io x y -> runRecordingRead x y >> io x y )
 
       -- Now enumerate all known reads.
-      {-# SCC foldrWithKey #-} Map.foldrWithKey'
-        ( {-# SCC f #-} \a ( committed, domainIndex ) r -> do
+      Map.foldrWithKey'
+        ( \a ( committed, domainIndex ) r -> do
             case committed of
-              Committed -> {-# SCC "Committed" #-}
-                runReaderT
-                  ( k a )
-                  es { reads = Map.insert ( variableIndex var ) domainIndex ( reads es ) }
+              Committed ->
+                runRecordingRead a domainIndex
 
               _ ->
                 return ()
