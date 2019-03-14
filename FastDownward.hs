@@ -53,7 +53,7 @@ module FastDownward
 import Control.Applicative ( Alternative(..) )
 import qualified Control.Monad.Fail
 import Control.Monad.IO.Class ( MonadIO, liftIO )
-import Control.Monad.Reader.Class ( asks, local )
+import Control.Monad.Reader.Class ( local )
 import Control.Monad.State.Class ( get, gets, modify )
 import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Reader ( ReaderT(..), runReaderT )
@@ -79,11 +79,9 @@ import qualified FastDownward.SAS.Effect
 import qualified FastDownward.SAS.Operator
 import qualified FastDownward.SAS.Plan
 import qualified FastDownward.SAS.Variable
-import GHC.Exts ( Any )
 import Prelude hiding ( reads )
 import System.Exit
 import System.IO.Temp
-import Unsafe.Coerce ( unsafeCoerce )
 
 
 -- | A @Var@ is a state variable - a variable who's contents may change over
@@ -96,9 +94,10 @@ data Var a =
     , values :: {-# UNPACK #-} !( IORef ( Map a ( Committed, FastDownward.SAS.DomainIndex ) ) )
       -- ^ Map Haskell values to the index in the domain in the SAS
       -- representation.
-    , subscribed :: IORef ( a -> FastDownward.SAS.DomainIndex -> IO () )
+    , subscribed :: {-# UNPACK #-} !( IORef ( a -> FastDownward.SAS.DomainIndex -> IO () ) )
+    , fromDomainIndex :: {-# UNPACK #-} !( IORef ( Map FastDownward.SAS.DomainIndex a ) )
+      -- ^ Map back from a domain index to the Haskell value.
     }
-
 
 
 data Committed =
@@ -153,6 +152,8 @@ observeValue var a = liftIO $ do
         i =
           FastDownward.SAS.DomainIndex ( fromIntegral ( Map.size vs ) )
 
+      modifyIORef' ( fromDomainIndex var ) ( Map.insert i a )
+
       i <$ modifyIORef' ( values var ) ( Map.insert a ( Uncommitted, i ) )
 
 
@@ -182,19 +183,19 @@ newVarAt axiomLayer initialValue = do
   subscribed <-
     liftIO ( newIORef ( \_ _ -> return () ) )
 
-  committedValues <-
-    liftIO ( newIORef [] )
+  fromDomainIndex <-
+    liftIO ( newIORef mempty )
 
   let
     enumerate =
-      map snd . Map.elems <$> readIORef values
+      map snd . Map.elems <$> liftIO ( readIORef values )
 
     var =
       Var{..}
 
   -- Observe the initial value...
   initialI <-
-    liftIO ( observeValue var initialValue )
+    observeValue var initialValue
 
   commit var initialValue
 
@@ -231,59 +232,65 @@ writeVar var a = Effect $ do
   --
   -- If the value is new, we record that this write invalidated a Var, which
   -- will cause exhaustEffects to run again.
-  currentValues <-
-    liftIO ( readIORef ( values var ) )
+  edomainIndex <- liftIO $ do
+    currentValues <-
+      readIORef ( values var )
 
-  ( domainIndex, later ) <-
     case Map.lookup a currentValues of
       Nothing -> do
         -- We've never seen this value before, first observe it to obtain
         -- its domain index.
-        domainIndex <-
-          observeValue var a
-
-        laterRef <-
-          liftIO $ newIORef $ do
-            commit var a
-
-            -- Now notify anyone who had already read this variable that there's
-            -- a new value.
-            notify <-
-              readIORef ( subscribed var )
-
-            notify a domainIndex
-
-        return
-          ( domainIndex
-          , do
-              action <-
-                readIORef laterRef
-
-              writeIORef laterRef ( return () )
-
-              action
-          )
+        Left <$> observeValue var a
 
       Just ( _, domainIndex ) ->
-        return ( domainIndex, return () )
+        return ( Right domainIndex )
 
-  -- Invoke the remaining continuation, but record the read.
-  callCC
-    ( \k ->
-        local
-        ( \es ->
-            es
-              { writes =
-                  Map.insert
-                    ( variableIndex var )
-                    ( domainIndex, unsafeCoerce a )
-                    ( writes es )
-              , onCommit =
-                  later >> onCommit es
-              }
+  case edomainIndex of
+    Left domainIndex -> do
+      -- We just discovered a new value, so we'll broadcast this.
+      laterRef <-
+        liftIO $ newIORef $ do
+          commit var a
+
+          notify <-
+            readIORef ( subscribed var )
+
+          notify a domainIndex
+
+      callCC
+        ( \k ->
+            local
+            ( \es ->
+                es
+                  { writes =
+                      Map.insert ( variableIndex var ) domainIndex ( writes es )
+                  , onCommit = do
+                      action <-
+                        readIORef laterRef
+
+                      writeIORef laterRef ( return () )
+
+                      action
+
+                      onCommit es
+                  }
+            )
+            ( k () )
         )
-        ( k () )
-    )
+
+    Right domainIndex ->
+      -- This is not a new value, so just record it and continue.
+      callCC
+        ( \k ->
+            local
+            ( \es ->
+                es
+                  { writes =
+                      Map.insert ( variableIndex var ) domainIndex ( writes es )
+                  }
+            )
+            ( k () )
+        )
 
 
 -- | Read the value of a 'Var' at the point the 'Effect' is invoked by the
@@ -297,9 +304,6 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
   -- is done by consulting the 'reads' map of prior reads first.
   -- Furthermore, if this variable has been written too, we re-read the last
   -- write.
-  currentValues <-
-    liftIO ( readIORef ( values var ) )
-
   let
     mPrevRead =
       Map.lookup ( variableIndex var ) ( reads es )
@@ -308,19 +312,22 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
       Map.lookup ( variableIndex var ) ( writes es )
 
   case ( mPrevWrite, mPrevRead ) of
-    ( Just ( _, prevWrite ), _ ) ->
+    ( Just prevWriteIndex, _ ) -> do
       -- We've written this variable, so continue with what we last wrote.
-      runReaderT ( k ( unsafeCoerce prevWrite ) ) es
+      prevWrite <-
+        ( Map.! prevWriteIndex ) <$> readIORef ( fromDomainIndex var )
 
-    ( Nothing, Just ( _, prevRead ) ) ->
+      runReaderT ( k prevWrite ) es
+
+    ( Nothing, Just prevReadIndex ) -> do
       -- We've seen this variable before, so just continue with it.
-      runReaderT ( k ( unsafeCoerce prevRead ) ) es
+      prevRead <-
+        ( Map.! prevReadIndex ) <$> readIORef ( fromDomainIndex var )
+
+      runReaderT ( k prevRead ) es
 
     ( Nothing, Nothing ) -> {-# SCC "NothingNothing" #-} do
       -- We have never seen this variable before.
-
-      -- Capture the current continuation, which will be re-invoked whenever
-      -- new values are written to this @Var@.
       let
         runRecordingRead a domainIndex =
           {-# SCC runRecordingRead #-}
@@ -328,11 +335,12 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
             ( k a )
             ( {-# SCC es #-} es
               { reads =
-                  Map.insert
-                    ( variableIndex var )
-                    ( domainIndex, unsafeCoerce a )
-                    ( reads es )
-              } )
+                  Map.insert ( variableIndex var ) domainIndex ( reads es )
+              }
+            )
+
+      currentValues <-
+        readIORef ( values var )
 
       -- First, subscribe to any new writes. This has to be done first because
       -- yielding known values could immediately cause a write to happen
@@ -348,13 +356,7 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
               Committed -> {-# SCC "Committed" #-}
                 runReaderT
                   ( k a )
-                  es
-                    { reads =
-                        Map.insert
-                          ( variableIndex var )
-                          ( domainIndex, unsafeCoerce a )
-                          ( reads es )
-                    }
+                  es { reads = Map.insert ( variableIndex var ) domainIndex ( reads es ) }
 
               _ ->
                 return ()
@@ -425,9 +427,9 @@ instance Alternative Effect where
 -- outcomes.
 data EffectState =
   EffectState
-    { reads :: !( Map FastDownward.SAS.VariableIndex ( FastDownward.SAS.DomainIndex, Any ) )
+    { reads :: !( Map FastDownward.SAS.VariableIndex FastDownward.SAS.DomainIndex )
       -- ^ The variables and their exact values read to reach a certain outcome.
-    , writes :: !( Map FastDownward.SAS.VariableIndex ( FastDownward.SAS.DomainIndex, Any ) )
+    , writes :: !( Map FastDownward.SAS.VariableIndex FastDownward.SAS.DomainIndex )
       -- ^ The changes made by this instance.
     , onCommit :: !( IO () )
     }
@@ -549,7 +551,7 @@ solve cfg ops tests = do
                     let
                       unchangedWrites =
                         Map.mapMaybe
-                          ( \( a, b ) -> if fst a == fst b then Just a else Nothing )
+                          ( \( a, b ) -> if a == b then Just a else Nothing )
                           ( Map.intersectionWith (,) writes reads )
 
                       actualWrites =
@@ -562,16 +564,13 @@ solve cfg ops tests = do
                           Seq.fromList $ map
                             ( uncurry FastDownward.SAS.VariableAssignment )
                             ( Map.toList
-                                ( fmap
-                                    fst
-                                    ( Map.difference reads writes
-                                        <> unchangedWrites
-                                    )
+                                ( Map.difference reads writes
+                                    <> unchangedWrites
                                 )
                             )
                       , effects =
                           Seq.fromList $ map
-                            ( \( v, ( post, _ ) ) -> FastDownward.SAS.Effect v Nothing post )
+                            ( \( v, post ) -> FastDownward.SAS.Effect v Nothing post )
                             ( Map.toList ( Map.difference writes reads ) )
                             ++
                               Map.elems
@@ -579,8 +578,8 @@ solve cfg ops tests = do
                                     ( \v pre post ->
                                         FastDownward.SAS.Effect v ( Just pre ) post
                                     )
-                                    ( fst <$> reads )
-                                    ( fst <$> actualWrites )
+                                    reads
+                                    actualWrites
                                 )
                       }
                 )
@@ -710,7 +709,7 @@ resetInitial var a = do
   liftIO ( writeIORef ( values var ) mempty )
 
   i <-
-    liftIO ( observeValue var a )
+    observeValue var a
 
   commit var a
 
@@ -737,17 +736,17 @@ any =
 testToVariableAssignment :: Test -> Problem FastDownward.SAS.VariableAssignment
 testToVariableAssignment ( TestEq var a ) =
   FastDownward.SAS.VariableAssignment ( variableIndex var )
-    <$> liftIO ( observeValue var a )
+    <$> observeValue var a
 
 testToVariableAssignment ( Any tests ) = do
   axiom <-
     newVarAt 0 False
 
   falseI <-
-    liftIO ( observeValue axiom False )
+    observeValue axiom False
 
   trueI <-
-    liftIO ( observeValue axiom True )
+    observeValue axiom True
 
   assigns <-
     Prelude.traverse testToVariableAssignment tests
