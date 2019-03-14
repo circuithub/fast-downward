@@ -699,6 +699,8 @@ resetInitial :: Ord a => Var a -> a -> Problem ()
 resetInitial var a = do
   liftIO ( writeIORef ( values var ) mempty )
 
+  liftIO ( writeIORef ( fromDomainIndex var ) mempty )
+
   i <-
     observeValue var a
 
