@@ -202,8 +202,7 @@ callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO
       ( proc
           fastDownward
           [ "--internal-plan-file", planFilePath
-          , "--search", "ehc(cg())"
-          -- , exprToString ( searchEngineToExpr search )
+          , exprToString ( searchEngineToExpr search )
           ]
       )
       { std_in = CreatePipe
