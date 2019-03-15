@@ -1,12 +1,11 @@
 module FastDownward.SAS.DomainIndex ( DomainIndex(..), toSAS ) where
 
-import Data.Word
 import qualified Data.Text.Lazy.Builder
 import qualified Data.Text.Lazy.Builder.Int
 
 
 newtype DomainIndex =
-  DomainIndex { unDomainIndex :: Word16 }
+  DomainIndex { unDomainIndex :: Int }
   deriving
     ( Eq, Ord, Show )
 

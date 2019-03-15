@@ -57,9 +57,11 @@ import Control.Monad.State.Class ( get, gets, modify )
 import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Reader ( ReaderT(..), runReaderT )
 import Control.Monad.Trans.State.Strict ( StateT, evalStateT )
+import Data.Coerce ( coerce )
 import qualified Data.Foldable
 import qualified Data.Graph
 import Data.IORef
+import Data.IntMap.Strict ( IntMap )
 import qualified Data.IntMap.Strict as IntMap
 import Data.List ( inits, intersect )
 import Data.Map.Strict ( Map )
@@ -261,7 +263,7 @@ writeVar var a = Effect $ do
           return
             es
               { writes =
-                  Map.insert ( variableIndex var ) domainIndex ( writes es )
+                  IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( writes es )
               , onCommit = do
                   action <-
                     readIORef laterRef
@@ -276,7 +278,7 @@ writeVar var a = Effect $ do
           return
             es
               { writes =
-                  Map.insert ( variableIndex var ) domainIndex ( writes es )
+                  IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( writes es )
               }
 
     es' `seq` runReaderT ( k () ) es'
@@ -295,10 +297,10 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
   -- write.
   let
     mPrevRead =
-      Map.lookup ( variableIndex var ) ( reads es )
+      IntMap.lookup ( coerce ( variableIndex var ) ) ( reads es )
 
     mPrevWrite =
-      Map.lookup ( variableIndex var ) ( writes es )
+      IntMap.lookup ( coerce ( variableIndex var ) ) ( writes es )
 
   case ( mPrevWrite, mPrevRead ) of
     ( Just prevWriteIndex, _ ) -> do
@@ -323,7 +325,7 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
             es' =
               es
                 { reads =
-                    Map.insert ( variableIndex var ) domainIndex ( reads es )
+                    IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( reads es )
                 }
 
           in es' `seq` runReaderT ( k a ) es'
@@ -414,9 +416,9 @@ instance Alternative Effect where
 -- outcomes.
 data EffectState =
   EffectState
-    { reads :: !( Map FastDownward.SAS.VariableIndex FastDownward.SAS.DomainIndex )
+    { reads :: !( IntMap FastDownward.SAS.DomainIndex )
       -- ^ The variables and their exact values read to reach a certain outcome.
-    , writes :: !( Map FastDownward.SAS.VariableIndex FastDownward.SAS.DomainIndex )
+    , writes :: !( IntMap FastDownward.SAS.DomainIndex )
       -- ^ The changes made by this instance.
     , onCommit :: !( IO () )
     }
@@ -537,33 +539,32 @@ solve cfg ops tests = do
                 ( \i ( _, EffectState{ reads, writes } ) ->
                     let
                       unchangedWrites =
-                        Map.mapMaybe
+                        IntMap.mapMaybe
                           ( \( a, b ) -> if a == b then Just a else Nothing )
-                          ( Map.intersectionWith (,) writes reads )
+                          ( IntMap.intersectionWith (,) writes reads )
 
                       actualWrites =
-                        writes `Map.difference` unchangedWrites
+                        writes `IntMap.difference` unchangedWrites
 
                     in
                     FastDownward.SAS.Operator
                       { name = fromString ( "op" <> show i )
                       , prevail =
                           Seq.fromList $ map
-                            ( uncurry FastDownward.SAS.VariableAssignment )
-                            ( Map.toList
-                                ( Map.difference reads writes
-                                    <> unchangedWrites
+                            ( \( x, y ) -> FastDownward.SAS.VariableAssignment ( coerce x ) y )
+                            ( IntMap.toList
+                                ( IntMap.difference reads writes <> unchangedWrites
                                 )
                             )
                       , effects =
                           Seq.fromList $ map
-                            ( \( v, post ) -> FastDownward.SAS.Effect v Nothing post )
-                            ( Map.toList ( Map.difference writes reads ) )
+                            ( \( v, post ) -> FastDownward.SAS.Effect ( coerce v ) Nothing post )
+                            ( IntMap.toList ( IntMap.difference writes reads ) )
                             ++
-                              Map.elems
-                                ( Map.intersectionWithKey
+                              IntMap.elems
+                                ( IntMap.intersectionWithKey
                                     ( \v pre post ->
-                                        FastDownward.SAS.Effect v ( Just pre ) post
+                                        FastDownward.SAS.Effect ( coerce v ) ( Just pre ) post
                                     )
                                     reads
                                     actualWrites

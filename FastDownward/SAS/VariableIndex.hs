@@ -1,12 +1,11 @@
 module FastDownward.SAS.VariableIndex ( VariableIndex(..), toSAS ) where
 
-import Data.Word
 import qualified Data.Text.Lazy.Builder
 import qualified Data.Text.Lazy.Builder.Int
 
 
 newtype VariableIndex =
-  VariableIndex { unVariableIndex :: Word16 }
+  VariableIndex { unVariableIndex :: Int }
   deriving
     ( Eq, Ord, Show )
 
