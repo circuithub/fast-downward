@@ -427,11 +427,27 @@ data EffectState =
 -- | The result from the solver on a call to 'solve'.
 data SolveResult a
   = Unsolvable
-    -- ^ The problem was to be unsolvable.
+    -- ^ The problem was proven to be unsolvable.
+  | UnsolvableIncomplete
+    -- ^ The problem was determined to be unsolvable, but the entire search
+    -- space was not explored.
+  | OutOfMemory
+    -- ^ The @downward@ executable ran out of memory.
+  | OutOfTime
+    -- ^ The @downward@ executable ran out of time.
+  | CriticalError
+    -- ^ The @downward@ executable encountered a critical error.
+  | InputError
+    -- ^ The @downward@ executable encountered an error parsing input.
+  | Unsupported
+    -- ^ The @downward@ executable was called with a search engine that is
+    -- incompatible with the problem definition.
   | Crashed String String ExitCode
     -- ^ Fast Downward crashed (or otherwise rejected) the given problem.
   | Solved ( Solution a )
     -- ^ A solution was found.
+  deriving
+    ( Show )
 
 
 -- | A successful solution to a planning problem. You can unpack a @Solution@
@@ -442,6 +458,8 @@ data Solution a =
     , operators :: IntMap.IntMap a
     , stepIndices :: [ IntMap.Key ]
     }
+  deriving
+    ( Show )
 
 
 -- | Extract a totally ordered plan from a solution.
@@ -601,7 +619,22 @@ solve cfg ops tests = do
         return Unsolvable
 
       ExitFailure 12 ->
-        return Unsolvable
+        return UnsolvableIncomplete
+
+      ExitFailure 22 ->
+        return OutOfMemory
+
+      ExitFailure 23 ->
+        return OutOfTime
+
+      ExitFailure 32 ->
+        return CriticalError
+
+      ExitFailure 33 ->
+        return InputError
+
+      ExitFailure 34 ->
+        return Unsupported
 
       ExitFailure other ->
         return ( Crashed stdout stderr ( ExitFailure other ) )
