@@ -53,7 +53,6 @@ module FastDownward
 import Control.Applicative ( Alternative(..) )
 import qualified Control.Monad.Fail
 import Control.Monad.IO.Class ( MonadIO, liftIO )
-import Control.Monad.Reader.Class ( local )
 import Control.Monad.State.Class ( get, gets, modify )
 import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Reader ( ReaderT(..), runReaderT )
@@ -245,47 +244,42 @@ writeVar var a = Effect $ do
       Just ( _, domainIndex ) ->
         return ( Right domainIndex )
 
-  callCC $ \k ->
-    case edomainIndex of
-      Left domainIndex -> do
-        -- We just discovered a new value, so we'll broadcast this.
-        laterRef <-
-          liftIO $ newIORef $ do
-            commit var a
+  ContT $ \k -> ReaderT $ \es -> do
+    es' <-
+      case edomainIndex of
+        Left domainIndex -> do
+          -- We just discovered a new value, so we'll broadcast this.
+          laterRef <-
+            newIORef $ do
+              commit var a
 
-            notify <-
-              readIORef ( subscribed var )
+              notify <-
+                readIORef ( subscribed var )
 
-            notify a domainIndex
+              notify a domainIndex
 
-        local
-          ( \es ->
-              es
-                { writes =
-                    Map.insert ( variableIndex var ) domainIndex ( writes es )
-                , onCommit = do
-                    action <-
-                      readIORef laterRef
+          return
+            es
+              { writes =
+                  Map.insert ( variableIndex var ) domainIndex ( writes es )
+              , onCommit = do
+                  action <-
+                    readIORef laterRef
 
-                    writeIORef laterRef ( return () )
+                  writeIORef laterRef ( return () )
+                    >> action
+                    >> onCommit es
+              }
 
-                    action
+        Right domainIndex ->
+          -- This is not a new value, so just record it and continue.
+          return
+            es
+              { writes =
+                  Map.insert ( variableIndex var ) domainIndex ( writes es )
+              }
 
-                    onCommit es
-                }
-          )
-          ( k () )
-
-      Right domainIndex ->
-        -- This is not a new value, so just record it and continue.
-        local
-          ( \es ->
-              es
-                { writes =
-                    Map.insert ( variableIndex var ) domainIndex ( writes es )
-                }
-          )
-          ( k () )
+    es' `seq` runReaderT ( k () ) es'
 
 
 -- | Read the value of a 'Var' at the point the 'Effect' is invoked by the
@@ -325,12 +319,14 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
       -- We have never seen this variable before.
       let
         runRecordingRead a domainIndex =
-          runReaderT
-            ( k a )
-            es
-              { reads =
-                  Map.insert ( variableIndex var ) domainIndex ( reads es )
-              }
+          let
+            es' =
+              es
+                { reads =
+                    Map.insert ( variableIndex var ) domainIndex ( reads es )
+                }
+
+          in es' `seq` runReaderT ( k a ) es'
 
       currentValues <-
         readIORef ( values var )
