@@ -130,6 +130,7 @@ import Data.Char
 import Data.List
 import Data.Maybe
 import Data.Ratio
+import qualified Data.Text.Lazy
 import qualified Data.Text.Lazy.IO
 import qualified FastDownward.SAS
 import qualified FastDownward.SAS.Plan
@@ -197,7 +198,7 @@ data Options =
 
 callFastDownward :: MonadIO m => Options -> m ( ExitCode, String, String )
 callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO $ do
-  process@( Just writeProblemHandle, _, _, processHandle ) <-
+  process@( Just writeProblemHandle, Just stdoutHandle, Just stderrHandle, processHandle ) <-
     createProcess
       ( proc
           fastDownward
@@ -210,14 +211,19 @@ callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO
       , std_err = CreatePipe
       }
 
-  {-# SCC writeProblem #-} Data.Text.Lazy.IO.hPutStr writeProblemHandle ( FastDownward.SAS.Plan.toSAS problem )
-
-  hClose writeProblemHandle
+  Data.Text.Lazy.IO.hPutStr writeProblemHandle ( FastDownward.SAS.Plan.toSAS problem )
+    >> hClose writeProblemHandle
 
   exitCode <-
     waitForProcess processHandle
 
-  return ( exitCode, "", "" )
+  stdout <-
+    Data.Text.Lazy.IO.hGetContents stdoutHandle
+
+  stderr <-
+    Data.Text.Lazy.IO.hGetContents stderrHandle
+
+  return ( exitCode, Data.Text.Lazy.unpack stdout, Data.Text.Lazy.unpack stderr )
 
 
 -- | See <http://www.fast-downward.org/Doc/SearchEngine>
