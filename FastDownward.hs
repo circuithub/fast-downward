@@ -1,3 +1,4 @@
+{-# language DeriveFunctor #-}
 {-# language FlexibleContexts #-}
 {-# language GADTs #-}
 {-# language GeneralizedNewtypeDeriving #-}
@@ -447,7 +448,7 @@ data SolveResult a
   | Solved ( Solution a )
     -- ^ A solution was found.
   deriving
-    ( Show )
+    ( Functor, Show )
 
 
 -- | A successful solution to a planning problem. You can unpack a @Solution@
@@ -459,7 +460,7 @@ data Solution a =
     , stepIndices :: [ IntMap.Key ]
     }
   deriving
-    ( Show )
+    ( Functor, Show )
 
 
 -- | Extract a totally ordered plan from a solution.
