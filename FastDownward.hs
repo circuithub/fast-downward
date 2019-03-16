@@ -342,18 +342,15 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
         ( \io x y -> runRecordingRead x y >> io x y )
 
       -- Now enumerate all known reads.
-      Map.foldrWithKey'
-        ( \a ( committed, domainIndex ) r -> do
+      Map.foldMapWithKey
+        ( \a ( committed, domainIndex ) ->
             case committed of
               Committed ->
                 runRecordingRead a domainIndex
 
               _ ->
                 return ()
-
-            r
         )
-        ( pure () )
         currentValues
 
 
