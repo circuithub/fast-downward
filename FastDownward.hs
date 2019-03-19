@@ -57,16 +57,16 @@ import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Control.Monad.State.Class ( get, gets, modify )
 import Control.Monad.Trans.Cont
 import Control.Monad.Trans.Reader ( ReaderT(..), runReaderT )
-import Control.Monad.Trans.State.Strict ( StateT, evalStateT )
+import Control.Monad.Trans.State.Lazy ( StateT, evalStateT )
 import Data.Coerce ( coerce )
 import qualified Data.Foldable
 import qualified Data.Graph
 import Data.IORef
-import Data.IntMap.Strict ( IntMap )
-import qualified Data.IntMap.Strict as IntMap
+import Data.IntMap.Lazy ( IntMap )
+import qualified Data.IntMap.Lazy as IntMap
 import Data.List ( inits, intersect )
-import Data.Map.Strict ( Map )
-import qualified Data.Map.Strict as Map
+import Data.Map.Lazy ( Map )
+import qualified Data.Map.Lazy as Map
 import Data.Maybe ( mapMaybe )
 import Data.Sequence ( Seq )
 import qualified Data.Sequence as Seq
@@ -154,14 +154,14 @@ observeValue var a = liftIO $ do
         i =
           FastDownward.SAS.DomainIndex ( fromIntegral ( Map.size vs ) )
 
-      modifyIORef' ( fromDomainIndex var ) ( Map.insert i a )
+      modifyIORef ( fromDomainIndex var ) ( Map.insert i a )
 
-      i <$ modifyIORef' ( values var ) ( Map.insert a ( Uncommitted, i ) )
+      i <$ modifyIORef ( values var ) ( Map.insert a ( Uncommitted, i ) )
 
 
 commit :: ( Ord a, MonadIO m ) => Var a -> a -> m ()
 commit var a = liftIO $ do
-  modifyIORef' ( values var ) ( Map.adjust ( \( _, x ) -> ( Committed, x ) ) a )
+  modifyIORef ( values var ) ( Map.adjust ( \( _, x ) -> ( Committed, x ) ) a )
 
 
 -- | Introduce a new state variable into a problem, and set it to an initial
@@ -239,13 +239,16 @@ writeVar var a = Effect $ do
       readIORef ( values var )
 
     case Map.lookup a currentValues of
+      Just ( Committed, domainIndex ) ->
+        return ( Right domainIndex )
+
+      Just ( Uncommitted, domainIndex ) ->
+        return ( Left domainIndex )
+
       Nothing -> do
         -- We've never seen this value before, first observe it to obtain
         -- its domain index.
         Left <$> observeValue var a
-
-      Just ( _, domainIndex ) ->
-        return ( Right domainIndex )
 
   ContT $ \k -> ReaderT $ \es -> do
     es' <-
@@ -254,12 +257,20 @@ writeVar var a = Effect $ do
           -- We just discovered a new value, so we'll broadcast this.
           laterRef <-
             newIORef $ do
-              commit var a
+              currentValues <-
+                readIORef ( values var )
 
-              notify <-
-                readIORef ( subscribed var )
+              case Map.lookup a currentValues of
+                Just ( Committed, _ ) ->
+                  return ()
 
-              notify a domainIndex
+                _ -> do
+                  commit var a
+
+                  notify <-
+                    readIORef ( subscribed var )
+
+                  notify a domainIndex
 
           return
             es
@@ -282,7 +293,7 @@ writeVar var a = Effect $ do
                   IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( writes es )
               }
 
-    es' `seq` runReaderT ( k () ) es'
+    runReaderT ( k () ) es'
 
 
 -- | Read the value of a 'Var' at the point the 'Effect' is invoked by the
@@ -329,7 +340,7 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
                     IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( reads es )
                 }
 
-          in es' `seq` runReaderT ( k a ) es'
+          in runReaderT ( k a ) es'
 
       currentValues <-
         readIORef ( values var )
@@ -337,7 +348,7 @@ readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
       -- First, subscribe to any new writes. This has to be done first because
       -- yielding known values could immediately cause a write to happen
       -- (e.g., in the case of using modifyVar = readVar v >>= writeVar . f).
-      modifyIORef'
+      modifyIORef
         ( subscribed var )
         ( \io x y -> runRecordingRead x y >> io x y )
 
@@ -414,11 +425,11 @@ instance Alternative Effect where
 -- outcomes.
 data EffectState =
   EffectState
-    { reads :: !( IntMap FastDownward.SAS.DomainIndex )
+    { reads :: IntMap FastDownward.SAS.DomainIndex
       -- ^ The variables and their exact values read to reach a certain outcome.
-    , writes :: !( IntMap FastDownward.SAS.DomainIndex )
+    , writes :: IntMap FastDownward.SAS.DomainIndex
       -- ^ The changes made by this instance.
-    , onCommit :: !( IO () )
+    , onCommit :: IO ()
     }
 
 
@@ -682,13 +693,21 @@ exhaustEffects ops = do
                   ReaderT $ \es -> do
                     onCommit es
 
-                    modifyIORef out ( ( a, es ) : )
+                    let
+                      es' = es { onCommit = return () }
+
+                    modifyIORef out ( ( a, es' ) : )
               )
           )
-          ( EffectState mempty mempty ( return () ) )
+          s0
     )
 
   readIORef out
+
+  where
+
+    s0 =
+      EffectState mempty mempty ( return () )
 
 
 -- | Leave the 'Problem' monad by running the given computation to 'IO'.
