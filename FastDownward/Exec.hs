@@ -205,7 +205,7 @@ callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO
           [ "--internal-plan-file", planFilePath
           , "--evaluator", "hlm=lmcount(lm_rhw(), admissible=true)"
           , "--evaluator", "hff=ff()"
-          , "--search", "lazy_greedy([hff,hlm],preferred=[hff,hlm])"
+          , "--search", "lazy_wastar([hff,hlm],preferred=[hff,hlm],w=1)"
           ]
       )
       { std_in = CreatePipe
