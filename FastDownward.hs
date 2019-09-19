@@ -399,10 +399,6 @@ instance Monad Effect where
     a >>= runEffect . f
   {-# INLINE (>>=) #-}
 
-  fail =
-    Control.Monad.Fail.fail
-  {-# INLINE fail #-}
-
 
 instance Control.Monad.Fail.MonadFail Effect where
   fail _ =
