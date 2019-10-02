@@ -1,3 +1,4 @@
+{-# language DeriveFunctor #-}
 {-# language FlexibleContexts #-}
 {-# language GADTs #-}
 {-# language GeneralizedNewtypeDeriving #-}
@@ -51,23 +52,21 @@ module FastDownward
   where
 
 import Control.Applicative ( Alternative(..) )
-import Control.Monad ( void )
 import qualified Control.Monad.Fail
 import Control.Monad.IO.Class ( MonadIO, liftIO )
-import Control.Monad.Reader.Class ( asks, local )
 import Control.Monad.State.Class ( get, gets, modify )
-import Control.Monad.Trans.Class ( lift )
 import Control.Monad.Trans.Cont
-import Control.Monad.Trans.Maybe
 import Control.Monad.Trans.Reader ( ReaderT(..), runReaderT )
-import Control.Monad.Trans.State.Strict ( StateT, evalStateT )
+import Control.Monad.Trans.State.Lazy ( StateT, evalStateT )
+import Data.Coerce ( coerce )
 import qualified Data.Foldable
 import qualified Data.Graph
 import Data.IORef
-import qualified Data.IntMap.Strict as IntMap
+import Data.IntMap.Lazy ( IntMap )
+import qualified Data.IntMap.Lazy as IntMap
 import Data.List ( inits, intersect )
-import Data.Map.Strict ( Map )
-import qualified Data.Map.Strict as Map
+import Data.Map.Lazy ( Map )
+import qualified Data.Map.Lazy as Map
 import Data.Maybe ( mapMaybe )
 import Data.Sequence ( Seq )
 import qualified Data.Sequence as Seq
@@ -82,11 +81,9 @@ import qualified FastDownward.SAS.Effect
 import qualified FastDownward.SAS.Operator
 import qualified FastDownward.SAS.Plan
 import qualified FastDownward.SAS.Variable
-import GHC.Exts ( Any )
 import Prelude hiding ( reads )
 import System.Exit
 import System.IO.Temp
-import Unsafe.Coerce ( unsafeCoerce )
 
 
 -- | A @Var@ is a state variable - a variable who's contents may change over
@@ -96,14 +93,17 @@ data Var a =
   Var
     { variableIndex :: {-# UNPACK #-} !FastDownward.SAS.VariableIndex
       -- ^ The SAS variable index of this variable.
-    , values :: {-# UNPACK #-} !( IORef ( Map a FastDownward.SAS.DomainIndex ) )
+    , values :: {-# UNPACK #-} !( IORef ( Map a ( Committed, FastDownward.SAS.DomainIndex ) ) )
       -- ^ Map Haskell values to the index in the domain in the SAS
       -- representation.
-    , subscribed :: IORef ( ( a, FastDownward.SAS.DomainIndex ) -> IO () )
-      -- ^ A mutable callback to invoke whenever a new value is written to
-      -- this variable. This allows other 'Effect's that read this @Var@ to be
-      -- re-evaluated.
+    , subscribed :: {-# UNPACK #-} !( IORef ( a -> FastDownward.SAS.DomainIndex -> IO () ) )
+    , fromDomainIndex :: {-# UNPACK #-} !( IORef ( Map FastDownward.SAS.DomainIndex a ) )
+      -- ^ Map back from a domain index to the Haskell value.
     }
+
+
+data Committed =
+  Committed | Uncommitted
 
 
 -- | The @Problem@ monad is used to build a computation that describes a
@@ -146,15 +146,22 @@ observeValue var a = liftIO $ do
     readIORef ( values var )
 
   case Map.lookup a vs of
-    Just i ->
+    Just ( _, i ) ->
       return i
 
     Nothing -> do
       let
         i =
-          FastDownward.SAS.DomainIndex ( Map.size vs )
+          FastDownward.SAS.DomainIndex ( fromIntegral ( Map.size vs ) )
 
-      i <$ modifyIORef' ( values var ) ( Map.insert a i )
+      modifyIORef ( fromDomainIndex var ) ( Map.insert i a )
+
+      i <$ modifyIORef ( values var ) ( Map.insert a ( Uncommitted, i ) )
+
+
+commit :: ( Ord a, MonadIO m ) => Var a -> a -> m ()
+commit var a = liftIO $ do
+  modifyIORef ( values var ) ( Map.adjust ( \( _, x ) -> ( Committed, x ) ) a )
 
 
 -- | Introduce a new state variable into a problem, and set it to an initial
@@ -176,18 +183,23 @@ newVarAt axiomLayer initialValue = do
     freshIndex
 
   subscribed <-
-    liftIO ( newIORef ( \_ -> return () ) )
+    liftIO ( newIORef ( \_ _ -> return () ) )
+
+  fromDomainIndex <-
+    liftIO ( newIORef mempty )
 
   let
     enumerate =
-      Map.elems <$> readIORef values
+      map snd . Map.elems <$> liftIO ( readIORef values )
 
     var =
       Var{..}
 
   -- Observe the initial value...
   initialI <-
-    liftIO ( observeValue var initialValue )
+    observeValue var initialValue
+
+  commit var initialValue
 
   -- ... and record it in the ProblemState.
   Problem
@@ -209,7 +221,7 @@ newVarAt axiomLayer initialValue = do
 -- | Lookup the next unused variable index.
 freshIndex :: Problem FastDownward.SAS.VariableIndex
 freshIndex =
-  FastDownward.SAS.VariableIndex <$> Problem ( gets ( Map.size . initialState ) )
+  FastDownward.SAS.VariableIndex <$> Problem ( gets ( fromIntegral . Map.size . initialState ) )
 
 
 -- | Write a value into 'Var'. If the solver choses to use this particular
@@ -222,50 +234,72 @@ writeVar var a = Effect $ do
   --
   -- If the value is new, we record that this write invalidated a Var, which
   -- will cause exhaustEffects to run again.
-  currentValues <-
-    liftIO ( readIORef ( values var ) )
+  edomainIndex <- liftIO $ do
+    currentValues <-
+      readIORef ( values var )
 
-  domainIndex <-
     case Map.lookup a currentValues of
+      Just ( Committed, domainIndex ) ->
+        return ( Right domainIndex )
+
+      Just ( Uncommitted, domainIndex ) ->
+        return ( Left domainIndex )
+
       Nothing -> do
         -- We've never seen this value before, first observe it to obtain
         -- its domain index.
-        domainIndex <-
-          observeValue var a
+        Left <$> observeValue var a
 
-        -- Now notify anyone who had already read this variable that there's
-        -- a new value.
-        notify <-
-          liftIO ( readIORef ( subscribed var ) )
+  ContT $ \k -> ReaderT $ \es -> do
+    es' <-
+      case edomainIndex of
+        Left domainIndex -> do
+          -- We just discovered a new value, so we'll broadcast this.
+          laterRef <-
+            newIORef $ do
+              currentValues <-
+                readIORef ( values var )
 
-        liftIO ( notify ( a, domainIndex ) )
+              case Map.lookup a currentValues of
+                Just ( Committed, _ ) ->
+                  return ()
 
-        return domainIndex
+                _ -> do
+                  commit var a
 
-      Just domainIndex ->
-        return domainIndex
+                  notify <-
+                    readIORef ( subscribed var )
 
-  -- Invoke the remaining continuation, but record the read.
-  callCC
-    ( \k ->
-        local
-        ( \es ->
+                  notify a domainIndex
+
+          return
             es
               { writes =
-                  Map.insert
-                    ( variableIndex var )
-                    ( domainIndex, unsafeCoerce a )
-                    ( writes es )
+                  IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( writes es )
+              , onCommit = do
+                  action <-
+                    readIORef laterRef
+
+                  writeIORef laterRef ( return () )
+                    >> action
+                    >> onCommit es
               }
-        )
-        ( k () )
-    )
+
+        Right domainIndex ->
+          -- This is not a new value, so just record it and continue.
+          return
+            es
+              { writes =
+                  IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( writes es )
+              }
+
+    runReaderT ( k () ) es'
 
 
 -- | Read the value of a 'Var' at the point the 'Effect' is invoked by the
 -- solver.
 readVar :: Ord a => Var a -> Effect a
-readVar var = Effect $ do
+readVar var = Effect $ ContT $ \k -> ReaderT $ \es -> do
   -- To "read" a variable is actually to read *all* of its values
   -- non-deterministically. The first time the Var v1 is read, we enumerate it
   -- and run the continuation with all values. However, in this continuation a
@@ -273,53 +307,62 @@ readVar var = Effect $ do
   -- is done by consulting the 'reads' map of prior reads first.
   -- Furthermore, if this variable has been written too, we re-read the last
   -- write.
-  currentValues <-
-    liftIO ( readIORef ( values var ) )
+  let
+    mPrevRead =
+      IntMap.lookup ( coerce ( variableIndex var ) ) ( reads es )
 
-  mPrevRead <-
-    asks ( Map.lookup ( variableIndex var ) . reads )
-
-  mPrevWrite <-
-    asks ( Map.lookup ( variableIndex var ) . writes )
+    mPrevWrite =
+      IntMap.lookup ( coerce ( variableIndex var ) ) ( writes es )
 
   case ( mPrevWrite, mPrevRead ) of
-    ( Just ( _, prevWrite ), _ ) ->
+    ( Just prevWriteIndex, _ ) -> do
       -- We've written this variable, so continue with what we last wrote.
-      return ( unsafeCoerce prevWrite )
+      prevWrite <-
+        ( Map.! prevWriteIndex ) <$> readIORef ( fromDomainIndex var )
 
-    ( Nothing, Just ( _, prevRead ) ) ->
+      runReaderT ( k prevWrite ) es
+
+    ( Nothing, Just prevReadIndex ) -> do
       -- We've seen this variable before, so just continue with it.
-      return ( unsafeCoerce prevRead )
+      prevRead <-
+        ( Map.! prevReadIndex ) <$> readIORef ( fromDomainIndex var )
+
+      runReaderT ( k prevRead ) es
 
     ( Nothing, Nothing ) -> do
       -- We have never seen this variable before.
-
-      -- Capture the current continuation, which will be re-invoked whenever
-      -- new values are written to this @Var@.
-      ContT $ \k -> lift $ ReaderT $ \es -> do
-        let
-          runRecordingRead ( a, domainIndex ) =
-            runReaderT
-              ( runMaybeT ( k a ) )
+      let
+        runRecordingRead a domainIndex =
+          let
+            es' =
               es
                 { reads =
-                    Map.insert
-                      ( variableIndex var )
-                      ( domainIndex, unsafeCoerce a )
-                      ( reads es )
+                    IntMap.insert ( coerce ( variableIndex var ) ) domainIndex ( reads es )
                 }
 
-        -- First, subscribe to any new writes. This has to be done first because
-        -- yielding known values could immediately cause a write to happen
-        -- (e.g., in the case of using modifyVar = readVar v >>= writeVar . f).
-        liftIO
-          ( modifyIORef
-              ( subscribed var )
-              ( \io r -> io r >> void ( runRecordingRead r ) )
-          )
+          in runReaderT ( k a ) es'
 
-        -- Now enumerate all known reads.
-        Data.Foldable.for_ ( Map.toList currentValues ) runRecordingRead
+      currentValues <-
+        readIORef ( values var )
+
+      -- First, subscribe to any new writes. This has to be done first because
+      -- yielding known values could immediately cause a write to happen
+      -- (e.g., in the case of using modifyVar = readVar v >>= writeVar . f).
+      modifyIORef
+        ( subscribed var )
+        ( \io x y -> runRecordingRead x y >> io x y )
+
+      -- Now enumerate all known reads.
+      Map.foldMapWithKey
+        ( \a ( committed, domainIndex ) ->
+            case committed of
+              Committed ->
+                runRecordingRead a domainIndex
+
+              _ ->
+                return ()
+        )
+        currentValues
 
 
 -- | Modify the contents of a 'Var' by using a function.
@@ -342,55 +385,78 @@ modifyVar v f =
 -- read the current location, and 'guard' to guard that this location is
 -- adjacent to our goal.
 newtype Effect a =
-  Effect { runEffect :: ContT () ( MaybeT ( ReaderT EffectState IO ) ) a }
+  Effect { runEffect :: ContT () ( ReaderT EffectState IO ) a }
   deriving
     ( Functor, Applicative )
 
 
 instance Monad Effect where
-  return =
-    Effect . return
+  return a =
+    Effect ( return a )
+  {-# INLINE return #-}
 
   Effect a >>= f = Effect $
     a >>= runEffect . f
+  {-# INLINE (>>=) #-}
 
   fail =
     Control.Monad.Fail.fail
+  {-# INLINE fail #-}
 
 
 instance Control.Monad.Fail.MonadFail Effect where
   fail _ =
     empty
+  {-# INLINE fail #-}
 
 
 instance Alternative Effect where
   empty =
-    Effect ( ContT ( \_k -> empty ) )
+    Effect ( ContT ( \_k -> return () ) )
+  {-# INLINE empty #-}
 
   Effect a <|> Effect b =
     Effect $ ContT $ \k ->
       runContT a k <|> runContT b k
+  {-# INLINE (<|>) #-}
 
 
 -- | Used to track the evaluation of an 'Effect' as we enumerate all possible
 -- outcomes.
 data EffectState =
   EffectState
-    { reads :: !( Map FastDownward.SAS.VariableIndex ( FastDownward.SAS.DomainIndex, Any ) )
+    { reads :: IntMap FastDownward.SAS.DomainIndex
       -- ^ The variables and their exact values read to reach a certain outcome.
-    , writes :: !( Map FastDownward.SAS.VariableIndex ( FastDownward.SAS.DomainIndex, Any ) )
+    , writes :: IntMap FastDownward.SAS.DomainIndex
       -- ^ The changes made by this instance.
+    , onCommit :: IO ()
     }
 
 
 -- | The result from the solver on a call to 'solve'.
 data SolveResult a
   = Unsolvable
-    -- ^ The problem was to be unsolvable.
+    -- ^ The problem was proven to be unsolvable.
+  | UnsolvableIncomplete
+    -- ^ The problem was determined to be unsolvable, but the entire search
+    -- space was not explored.
+  | OutOfMemory
+    -- ^ The @downward@ executable ran out of memory.
+  | OutOfTime
+    -- ^ The @downward@ executable ran out of time.
+  | CriticalError
+    -- ^ The @downward@ executable encountered a critical error.
+  | InputError
+    -- ^ The @downward@ executable encountered an error parsing input.
+  | Unsupported
+    -- ^ The @downward@ executable was called with a search engine that is
+    -- incompatible with the problem definition.
   | Crashed String String ExitCode
     -- ^ Fast Downward crashed (or otherwise rejected) the given problem.
   | Solved ( Solution a )
     -- ^ A solution was found.
+  deriving
+    ( Functor, Show )
 
 
 -- | A successful solution to a planning problem. You can unpack a @Solution@
@@ -401,6 +467,8 @@ data Solution a =
     , operators :: IntMap.IntMap a
     , stepIndices :: [ IntMap.Key ]
     }
+  deriving
+    ( Functor, Show )
 
 
 -- | Extract a totally ordered plan from a solution.
@@ -465,6 +533,7 @@ solve cfg ops tests = do
                 { name =
                     fromString ( "var-" <> show i )
                 , domain =
+                    Seq.fromList $
                     map
                       ( \( FastDownward.SAS.DomainIndex d ) ->
                           fromString
@@ -484,59 +553,55 @@ solve cfg ops tests = do
           , useCosts =
               FastDownward.SAS.NoCosts
           , variables =
-              variables
+              Seq.fromList variables
           , mutexGroups =
-              []
+              mempty
           , initialState =
               FastDownward.SAS.State
-                ( map ( initial . snd ) ( Map.toAscList initialState ) )
+                ( Seq.fromList $ map ( initial . snd ) ( Map.toAscList initialState ) )
           , goal =
-              FastDownward.SAS.Goal goal
+              FastDownward.SAS.Goal ( Seq.fromList goal )
           , operators =
-              zipWith
+              Seq.fromList $ zipWith
                 ( \i ( _, EffectState{ reads, writes } ) ->
                     let
                       unchangedWrites =
-                        Map.mapMaybe
-                          ( \( a, b ) -> if fst a == fst b then Just a else Nothing )
-                          ( Map.intersectionWith (,) writes reads )
+                        IntMap.mapMaybe
+                          ( \( a, b ) -> if a == b then Just a else Nothing )
+                          ( IntMap.intersectionWith (,) writes reads )
 
                       actualWrites =
-                        writes `Map.difference` unchangedWrites
+                        writes `IntMap.difference` unchangedWrites
 
                     in
                     FastDownward.SAS.Operator
                       { name = fromString ( "op" <> show i )
                       , prevail =
-                          map
-                            ( uncurry FastDownward.SAS.VariableAssignment )
-                            ( Map.toList
-                                ( fmap
-                                    fst
-                                    ( Map.difference reads writes
-                                        <> unchangedWrites
-                                    )
+                          Seq.fromList $ map
+                            ( \( x, y ) -> FastDownward.SAS.VariableAssignment ( coerce x ) y )
+                            ( IntMap.toList
+                                ( IntMap.difference reads writes <> unchangedWrites
                                 )
                             )
                       , effects =
-                          map
-                            ( \( v, ( post, _ ) ) -> FastDownward.SAS.Effect v Nothing post )
-                            ( Map.toList ( Map.difference writes reads ) )
+                          Seq.fromList $ map
+                            ( \( v, post ) -> FastDownward.SAS.Effect ( coerce v ) Nothing post )
+                            ( IntMap.toList ( IntMap.difference writes reads ) )
                             ++
-                              Map.elems
-                                ( Map.intersectionWithKey
+                              IntMap.elems
+                                ( IntMap.intersectionWithKey
                                     ( \v pre post ->
-                                        FastDownward.SAS.Effect v ( Just pre ) post
+                                        FastDownward.SAS.Effect ( coerce v ) ( Just pre ) post
                                     )
-                                    ( fst <$> reads )
-                                    ( fst <$> actualWrites )
+                                    reads
+                                    actualWrites
                                 )
                       }
                 )
                 [ 0 :: Int .. ]
                 operators
           , axioms =
-              Data.Foldable.toList axioms
+              Seq.fromList $ Data.Foldable.toList axioms
           }
 
     planFilePath <-
@@ -547,7 +612,7 @@ solve cfg ops tests = do
         ( Exec.callFastDownward
             Exec.Options
               { fastDownward = "downward"
-              , problem = Data.Text.Lazy.unpack ( FastDownward.SAS.Plan.toSAS plan )
+              , problem = plan
               , planFilePath = planFilePath
               , search = cfg
               }
@@ -558,7 +623,22 @@ solve cfg ops tests = do
         return Unsolvable
 
       ExitFailure 12 ->
-        return Unsolvable
+        return UnsolvableIncomplete
+
+      ExitFailure 22 ->
+        return OutOfMemory
+
+      ExitFailure 23 ->
+        return OutOfTime
+
+      ExitFailure 32 ->
+        return CriticalError
+
+      ExitFailure 33 ->
+        return InputError
+
+      ExitFailure 34 ->
+        return Unsupported
 
       ExitFailure other ->
         return ( Crashed stdout stderr ( ExitFailure other ) )
@@ -603,17 +683,26 @@ exhaustEffects ops = do
     ops
     ( \( Effect ( ContT k ) ) ->
         runReaderT
-          ( runMaybeT
-              ( k
-                  ( \a ->
-                      lift ( ReaderT ( \es -> modifyIORef out ( ( a, es ) : ) ) )
-                  )
+          ( k
+              ( \a ->
+                  ReaderT $ \es -> do
+                    onCommit es
+
+                    let
+                      es' = es { onCommit = return () }
+
+                    modifyIORef out ( ( a, es' ) : )
               )
           )
-          ( EffectState mempty mempty)
+          s0
     )
 
   readIORef out
+
+  where
+
+    s0 =
+      EffectState mempty mempty ( return () )
 
 
 -- | Leave the 'Problem' monad by running the given computation to 'IO'.
@@ -650,8 +739,14 @@ requiresAxioms =
 -- with).
 resetInitial :: Ord a => Var a -> a -> Problem ()
 resetInitial var a = do
+  liftIO ( writeIORef ( values var ) mempty )
+
+  liftIO ( writeIORef ( fromDomainIndex var ) mempty )
+
   i <-
-    liftIO ( observeValue var a )
+    observeValue var a
+
+  commit var a
 
   Problem $ modify $ \ps ->
     ps
@@ -676,17 +771,17 @@ any =
 testToVariableAssignment :: Test -> Problem FastDownward.SAS.VariableAssignment
 testToVariableAssignment ( TestEq var a ) =
   FastDownward.SAS.VariableAssignment ( variableIndex var )
-    <$> liftIO ( observeValue var a )
+    <$> observeValue var a
 
 testToVariableAssignment ( Any tests ) = do
   axiom <-
     newVarAt 0 False
 
   falseI <-
-    liftIO ( observeValue axiom False )
+    observeValue axiom False
 
   trueI <-
-    liftIO ( observeValue axiom True )
+    observeValue axiom True
 
   assigns <-
     Prelude.traverse testToVariableAssignment tests
@@ -697,7 +792,7 @@ testToVariableAssignment ( Any tests ) = do
           Seq.fromList
             [ FastDownward.SAS.Axiom
                 { variable = variableIndex axiom
-                , conditions = [ va ]
+                , conditions = Seq.singleton va
                 , pre = falseI
                 , post = trueI
                 }
@@ -724,7 +819,7 @@ partiallyOrderedPlan
 partiallyOrderedPlan Solution{..} =
   let
     ops =
-      IntMap.fromList ( zip [0..] ( FastDownward.SAS.Plan.operators sas ) )
+      IntMap.fromList ( zip [0..] ( Data.Foldable.toList ( FastDownward.SAS.Plan.operators sas ) ) )
 
     operation i =
       ops IntMap.! i
@@ -770,7 +865,7 @@ assignments o =
   [ FastDownward.SAS.VariableAssignment
       ( FastDownward.SAS.Effect.variable e )
       ( FastDownward.SAS.Effect.post e )
-  | e <- FastDownward.SAS.Operator.effects o
+  | e <- Data.Foldable.toList ( FastDownward.SAS.Operator.effects o )
   ]
 
 
@@ -779,9 +874,9 @@ assignments o =
 -- must be such in order for this operator to be applicable. This is the
 -- combination of the prevailing conditions for the operator, and the original
 -- state for all variables updated by effects.
-requirements :: FastDownward.SAS.Operator -> [ FastDownward.SAS.VariableAssignment ]
+requirements :: FastDownward.SAS.Operator -> Seq FastDownward.SAS.VariableAssignment
 requirements o =
-  FastDownward.SAS.Operator.prevail o ++ original o
+  FastDownward.SAS.Operator.prevail o <> Seq.fromList ( original o )
 
 
 -- | Return all the original 'FastDownward.VariableAssignment's for an
@@ -794,7 +889,7 @@ original o =
         FastDownward.SAS.VariableAssignment ( FastDownward.SAS.Effect.variable e )
           <$> FastDownward.SAS.Effect.pre e
     )
-    ( FastDownward.SAS.Operator.effects o )
+    ( Data.Foldable.toList ( FastDownward.SAS.Operator.effects o ) )
 
 
 -- | @o `after` x@ is true if:
@@ -808,5 +903,5 @@ after
   -> FastDownward.SAS.Operator.Operator
   -> Bool
 o `after` x =
-  not ( null ( requirements o `intersect` assignments x ) ) ||
-    not ( null ( requirements x `intersect` original o ) )
+  not ( null ( Data.Foldable.toList ( requirements o ) `intersect` assignments x ) ) ||
+    not ( null ( Data.Foldable.toList ( requirements x ) `intersect` original o ) )

@@ -2,7 +2,7 @@
 
 module FastDownward.SAS.Version ( Version(..), toSAS ) where
 
-import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.Builder
 
 
 data Version =
@@ -11,13 +11,10 @@ data Version =
     ( Show )
 
 
-toSAS :: Version -> Data.Text.Lazy.Text
+toSAS :: Version -> Data.Text.Lazy.Builder.Builder
 toSAS v =
-  Data.Text.Lazy.intercalate
-    "\n"
-    [ "begin_version"
-    , case v of
-        SAS3 ->
-          "3"
-    , "end_version"
-    ]
+     "begin_version\n"
+  <> case v of
+      SAS3 ->
+        "3\n"
+  <> "end_version"

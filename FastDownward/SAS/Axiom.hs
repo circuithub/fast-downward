@@ -3,8 +3,10 @@
 
 module FastDownward.SAS.Axiom ( Axiom(..), toSAS ) where
 
-import Data.String ( fromString )
-import qualified Data.Text.Lazy
+import Data.Sequence ( Seq )
+import qualified Data.Sequence as Seq
+import qualified Data.Text.Lazy.Builder
+import qualified Data.Text.Lazy.Builder.Int
 import FastDownward.SAS.DomainIndex ( DomainIndex )
 import qualified FastDownward.SAS.DomainIndex as DomainIndex
 import FastDownward.SAS.VariableAssignment ( VariableAssignment )
@@ -16,7 +18,7 @@ import qualified FastDownward.SAS.VariableIndex as VariableIndex
 data Axiom =
   Axiom
     { variable :: VariableIndex
-    , conditions :: [ VariableAssignment ]
+    , conditions :: Seq VariableAssignment
     , pre :: DomainIndex
     , post :: DomainIndex
     }
@@ -24,18 +26,10 @@ data Axiom =
     ( Show )
 
 
-toSAS :: Axiom -> Data.Text.Lazy.Text
+toSAS :: Axiom -> Data.Text.Lazy.Builder.Builder
 toSAS Axiom{..} =
-  Data.Text.Lazy.intercalate
-    "\n"
-    [ "begin_rule"
-    , fromString ( show ( length conditions ) )
-    , Data.Text.Lazy.intercalate "\n" ( map VariableAssignment.toSAS conditions )
-    , Data.Text.Lazy.intercalate
-        " "
-        [ VariableIndex.toSAS variable
-        , DomainIndex.toSAS pre
-        , DomainIndex.toSAS post
-        ]
-    , "end_rule"
-    ]
+     "begin_rule\n"
+  <> Data.Text.Lazy.Builder.Int.decimal ( Seq.length conditions ) <> "\n"
+  <> foldMap ( \x -> VariableAssignment.toSAS x <> "\n" ) conditions
+  <> VariableIndex.toSAS variable <> " " <> DomainIndex.toSAS pre <> " " <> DomainIndex.toSAS post <> "\n"
+  <> "end_rule"

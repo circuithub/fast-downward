@@ -3,26 +3,23 @@
 
 module FastDownward.SAS.Goal ( Goal(..), toSAS ) where
 
-import Data.String ( fromString )
-import qualified Data.Text.Lazy
+import Data.Sequence ( Seq )
+import qualified Data.Sequence as Seq
+import qualified Data.Text.Lazy.Builder
+import qualified Data.Text.Lazy.Builder.Int
 import FastDownward.SAS.VariableAssignment ( VariableAssignment )
 import qualified FastDownward.SAS.VariableAssignment as VariableAssignment
 
 
 newtype Goal =
-  Goal { finalAssignments :: [ VariableAssignment ] }
+  Goal { finalAssignments :: Seq VariableAssignment }
   deriving
     ( Show )
 
 
-toSAS :: Goal -> Data.Text.Lazy.Text
+toSAS :: Goal -> Data.Text.Lazy.Builder.Builder
 toSAS Goal{..} =
-  Data.Text.Lazy.intercalate
-    "\n"
-    [ "begin_goal"
-    , fromString ( show ( length finalAssignments ) )
-    , Data.Text.Lazy.intercalate
-        "\n"
-        ( map VariableAssignment.toSAS finalAssignments )
-    , "end_goal"
-    ]
+     "begin_goal\n"
+  <> Data.Text.Lazy.Builder.Int.decimal ( Seq.length finalAssignments ) <> "\n"
+  <> foldMap ( \x -> VariableAssignment.toSAS x <> "\n" ) finalAssignments
+  <> "end_goal"

@@ -1,7 +1,7 @@
 module FastDownward.SAS.VariableIndex ( VariableIndex(..), toSAS ) where
 
-import Data.String ( fromString )
-import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.Builder
+import qualified Data.Text.Lazy.Builder.Int
 
 
 newtype VariableIndex =
@@ -10,6 +10,6 @@ newtype VariableIndex =
     ( Eq, Ord, Show )
 
 
-toSAS :: VariableIndex -> Data.Text.Lazy.Text
+toSAS :: VariableIndex -> Data.Text.Lazy.Builder.Builder
 toSAS ( VariableIndex i ) =
-  fromString ( show i )
+  Data.Text.Lazy.Builder.Int.decimal i

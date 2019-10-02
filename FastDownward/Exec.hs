@@ -130,7 +130,12 @@ import Data.Char
 import Data.List
 import Data.Maybe
 import Data.Ratio
+import qualified Data.Text.Lazy
+import qualified Data.Text.Lazy.IO
+import qualified FastDownward.SAS
+import qualified FastDownward.SAS.Plan
 import System.Exit ( ExitCode )
+import System.IO ( hClose )
 import System.Process
 
 
@@ -185,21 +190,41 @@ exprToString ( List l ) =
 data Options =
   Options
     { fastDownward :: FilePath
-    , problem :: String
+    , problem :: FastDownward.SAS.Plan
     , planFilePath :: FilePath
     , search :: SearchEngine
     }
 
 
 callFastDownward :: MonadIO m => Options -> m ( ExitCode, String, String )
-callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO $
-  readProcessWithExitCode
-    fastDownward
-    [ "--internal-plan-file", planFilePath
-    , "--search"
-    , exprToString ( searchEngineToExpr search )
-    ]
-    problem
+callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO $ do
+  process@( Just writeProblemHandle, Just stdoutHandle, Just stderrHandle, processHandle ) <-
+    createProcess
+      ( proc
+          fastDownward
+          [ "--internal-plan-file", planFilePath
+          , "--search"
+          , exprToString ( searchEngineToExpr search )
+          ]
+      )
+      { std_in = CreatePipe
+      , std_out = CreatePipe
+      , std_err = CreatePipe
+      }
+
+  Data.Text.Lazy.IO.hPutStr writeProblemHandle ( FastDownward.SAS.Plan.toSAS problem )
+    >> hClose writeProblemHandle
+
+  exitCode <-
+    waitForProcess processHandle
+
+  stdout <-
+    Data.Text.Lazy.IO.hGetContents stdoutHandle
+
+  stderr <-
+    Data.Text.Lazy.IO.hGetContents stderrHandle
+
+  return ( exitCode, Data.Text.Lazy.unpack stdout, Data.Text.Lazy.unpack stderr )
 
 
 -- | See <http://www.fast-downward.org/Doc/SearchEngine>

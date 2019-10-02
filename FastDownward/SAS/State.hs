@@ -3,22 +3,20 @@
 
 module FastDownward.SAS.State ( State(..), toSAS ) where
 
-import qualified Data.Text.Lazy
+import Data.Sequence ( Seq )
+import qualified Data.Text.Lazy.Builder
 import FastDownward.SAS.DomainIndex ( DomainIndex )
 import qualified FastDownward.SAS.DomainIndex as DomainIndex
 
 
 newtype State =
-  State { initialValues :: [ DomainIndex ] }
+  State { initialValues :: Seq DomainIndex }
   deriving
     ( Show )
 
 
-toSAS :: State -> Data.Text.Lazy.Text
+toSAS :: State -> Data.Text.Lazy.Builder.Builder
 toSAS State{..} =
-  Data.Text.Lazy.intercalate
-    "\n"
-    [ "begin_state"
-    , Data.Text.Lazy.intercalate "\n" ( map DomainIndex.toSAS initialValues )
-    , "end_state"
-    ]
+     "begin_state\n"
+  <> foldMap ( \x -> DomainIndex.toSAS x <> "\n" ) initialValues
+  <> "end_state"
