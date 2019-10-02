@@ -203,8 +203,8 @@ callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO
       ( proc
           fastDownward
           [ "--internal-plan-file", planFilePath
-          , "--search"
-          , exprToString ( searchEngineToExpr search )
+          , "--evaluator", "lmc=lmcount(lm_merged([lm_rhw(),lm_hm(m=1)]),admissible=true)"
+          , "--search", "astar(lmc,lazy_evaluator=lmc)"
           ]
       )
       { std_in = CreatePipe
