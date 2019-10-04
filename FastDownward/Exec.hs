@@ -4,7 +4,11 @@
 
 module FastDownward.Exec
   ( Options(..)
+  , SearchConfiguration(..)
   , callFastDownward
+
+    -- * Predefined Search Engines
+  , bjolp
 
     -- * Search Engines
   , SearchEngine(..)
@@ -139,6 +143,65 @@ import System.IO ( hClose )
 import System.Process
 
 
+bjolp :: SearchConfiguration
+bjolp =
+  SearchConfiguration
+    { search =
+        AStar
+          AStarConfiguration
+            { evaluator = Predefined "lmc"
+            , lazyEvaluator = Just ( Predefined "lmc" )
+            , pruning = Null
+            , costType = Normal
+            , bound = Nothing
+            , maxTime = Just 60
+            }
+    , evaluators =
+        [ ( "lmc"
+          , LMCount
+              LMCountConfiguration
+                { lmFactory =
+                    LMMerged
+                      LMMergedConfiguration
+                        { factories =
+                            [ LMRHW
+                                LMRHWConfiguration
+                                  { reasonableOrders = False
+                                  , onlyCausalLandmarks = False
+                                  , disjunctiveLandmarks = True
+                                  , conjunctiveLandmarks = True
+                                  , noOrders = False
+                                  }
+                            , LMHM
+                                LMHMConfiguration
+                                  { m = 1
+                                  , reasonableOrders = False
+                                  , onlyCausalLandmarks = False
+                                  , disjunctiveLandmarks = True
+                                  , conjunctiveLandmarks = True
+                                  , noOrders = False
+                                  }
+                            ]
+                        , reasonableOrders = False
+                        , onlyCausalLandmarks = False
+                        , disjunctiveLandmarks = True
+                        , conjunctiveLandmarks = True
+                        , noOrders = False
+                        }
+                , admissible = True
+                , optimal = False
+                , pref = False
+                , alm = True
+                , lpSolver = CLP
+                , transform = NoTransform
+                , cacheEstimates = True
+                }
+
+          )
+        ]
+    }
+
+
 data Expr
   = App String [ Expr ] [ ( String, Expr ) ]
   | Lit String
@@ -192,20 +255,36 @@ data Options =
     { fastDownward :: FilePath
     , problem :: FastDownward.SAS.Plan
     , planFilePath :: FilePath
-    , search :: SearchEngine
+    , searchConfiguration :: SearchConfiguration
     }
 
 
+data SearchConfiguration =
+  SearchConfiguration
+    { search :: SearchEngine
+    , evaluators :: [ ( String, Evaluator ) ]
+    }
+
+
+
 callFastDownward :: MonadIO m => Options -> m ( ExitCode, String, String )
-callFastDownward Options{ fastDownward, problem, planFilePath, search } = liftIO $ do
-  process@( Just writeProblemHandle, Just stdoutHandle, Just stderrHandle, processHandle ) <-
+callFastDownward Options{ fastDownward, problem, planFilePath, searchConfiguration = SearchConfiguration{ search, evaluators } } = liftIO $ do
+  ( Just writeProblemHandle, Just stdoutHandle, Just stderrHandle, processHandle ) <-
     createProcess
       ( proc
           fastDownward
-          [ "--internal-plan-file", planFilePath
-          , "--search"
-          , exprToString ( searchEngineToExpr search )
-          ]
+          ( concat
+              [ [ "--internal-plan-file", planFilePath ]
+              , concatMap
+                  ( \( name, def ) ->
+                      [ "--evaluator"
+                      , name <> "=" <> exprToString ( evaluatorToExpr def )
+                      ]
+                  )
+                  evaluators
+              , [ "--search", exprToString ( searchEngineToExpr search ) ]
+              ]
+          )
       )
       { std_in = CreatePipe
       , std_out = CreatePipe
@@ -503,7 +582,8 @@ lazyWAStar LazyWeightedAStarConfiguration{ evaluators, preferred, reopenClosed, 
 
 -- | See <http://www.fast-downward.org/Doc/Evaluator>
 data Evaluator
-  = Add AddConfiguration
+  = Predefined String
+  | Add AddConfiguration
   | AllStatesPotential AllStatesPotentialConfiguration
   | Blind BlindConfiguration
   | CEA CEAConfiguration
@@ -534,6 +614,9 @@ data Evaluator
 evaluatorToExpr :: Evaluator -> Expr
 evaluatorToExpr =
   \case
+    Predefined varName ->
+      Lit varName
+
     Add cfg ->
       add cfg
 

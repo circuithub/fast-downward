@@ -35,7 +35,7 @@ type Ball = Var BallLocation
 
 type Gripper = Var GripperState
 
-  
+
 data Action = PickUpBall | SwitchRooms | DropBall
   deriving (Show)
 
@@ -50,14 +50,14 @@ problem = do
     pickUpBallWithGrippper :: Ball -> Gripper -> Effect Action
     pickUpBallWithGrippper b gripper = do
       Empty <- readVar gripper
-  
+
       robotRoom <- readVar robotLocation
       ballLocation <- readVar b
       guard (ballLocation == InRoom robotRoom)
-  
+
       writeVar b InGripper
       writeVar gripper HoldingBall
-  
+
       return PickUpBall
 
 
@@ -71,63 +71,34 @@ problem = do
     dropBall b gripper = do
       HoldingBall <- readVar gripper
       InGripper <- readVar b
-  
+
       robotRoom <- readVar robotLocation
       writeVar b (InRoom robotRoom)
-  
+
       writeVar gripper Empty
-  
+
       return DropBall
 
-  
+
   solve
-    cfg
+    Exec.bjolp
     ( [ pickUpBallWithGrippper b g | b <- balls, g <- grippers ]
         ++ [ dropBall b g | b <- balls, g <- grippers ]
         ++ [ moveRobotToAdjacentRoom ]
     )
     [ b ?= InRoom RoomB | b <- balls ]
 
-  
+
 main :: IO ()
 main = do
   res <- runProblem problem
   case res of
     Solved plan -> do
       putStrLn "Found a plan!"
-      zipWithM_ 
-        ( \i step -> putStrLn ( show i ++ ": " ++ show step ) ) 
-        [ 1::Int .. ] 
+      zipWithM_
+        ( \i step -> putStrLn ( show i ++ ": " ++ show step ) )
+        [ 1::Int .. ]
         ( totallyOrderedPlan plan )
 
     _ ->
       putStrLn "Couldn't find a plan!"
-
-
-cfg :: Exec.SearchEngine
-cfg =
-  Exec.AStar Exec.AStarConfiguration
-    { evaluator =
-        Exec.LMCount Exec.LMCountConfiguration
-          { lmFactory =
-              Exec.LMExhaust Exec.LMExhaustConfiguration
-                { reasonableOrders = False
-                , onlyCausalLandmarks = False
-                , disjunctiveLandmarks = True
-                , conjunctiveLandmarks = True
-                , noOrders = False
-                }
-          , admissible = False
-          , optimal = False
-          , pref = True
-          , alm = True
-          , lpSolver = Exec.CPLEX
-          , transform = Exec.NoTransform
-          , cacheEstimates = True
-          }
-    , lazyEvaluator = Nothing
-    , pruning = Exec.Null
-    , costType = Exec.Normal
-    , bound = Nothing
-    , maxTime = Nothing
-    }

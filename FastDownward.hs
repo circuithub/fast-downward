@@ -481,7 +481,7 @@ totallyOrderedPlan Solution{..} =
 -- problem.
 solve
   :: Show a
-  => Exec.SearchEngine
+  => Exec.SearchConfiguration
   -> [ Effect a ]
      -- ^ The set of effects available to the planner. Each effect can return
      -- some domain-specific information of type @a@ which you can use to
@@ -614,7 +614,7 @@ solve cfg ops tests = do
               { fastDownward = "downward"
               , problem = plan
               , planFilePath = planFilePath
-              , search = cfg
+              , searchConfiguration = cfg
               }
         )
 
