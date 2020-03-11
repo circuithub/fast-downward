@@ -129,6 +129,7 @@ module FastDownward.Exec
   )
   where
 
+import Control.Concurrent.Async (concurrently)
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Char
 import Data.List
@@ -295,11 +296,9 @@ callFastDownward Options{ fastDownward, problem, planFilePath, searchConfigurati
   Data.Text.Lazy.IO.hPutStr writeProblemHandle ( FastDownward.SAS.Plan.toSAS problem )
     >> hClose writeProblemHandle
 
-  stdout <-
-    Data.Text.IO.hGetContents stdoutHandle
-
-  stderr <-
-    Data.Text.IO.hGetContents stderrHandle
+  (stderr, stdout) <- concurrently
+        (Data.Text.IO.hGetContents stderrHandle)
+        (Data.Text.IO.hGetContents stdoutHandle)
 
   exitCode <-
     waitForProcess processHandle
