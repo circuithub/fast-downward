@@ -129,12 +129,14 @@ module FastDownward.Exec
   )
   where
 
+import Control.Concurrent.Async (concurrently)
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import Data.Char
 import Data.List
 import Data.Maybe
 import Data.Ratio
-import qualified Data.Text.Lazy
+import qualified Data.Text
+import qualified Data.Text.IO
 import qualified Data.Text.Lazy.IO
 import qualified FastDownward.SAS
 import qualified FastDownward.SAS.Plan
@@ -294,16 +296,14 @@ callFastDownward Options{ fastDownward, problem, planFilePath, searchConfigurati
   Data.Text.Lazy.IO.hPutStr writeProblemHandle ( FastDownward.SAS.Plan.toSAS problem )
     >> hClose writeProblemHandle
 
+  (stderr, stdout) <- concurrently
+        (Data.Text.IO.hGetContents stderrHandle)
+        (Data.Text.IO.hGetContents stdoutHandle)
+
   exitCode <-
     waitForProcess processHandle
 
-  stdout <-
-    Data.Text.Lazy.IO.hGetContents stdoutHandle
-
-  stderr <-
-    Data.Text.Lazy.IO.hGetContents stderrHandle
-
-  return ( exitCode, Data.Text.Lazy.unpack stdout, Data.Text.Lazy.unpack stderr )
+  return ( exitCode, Data.Text.unpack stdout, Data.Text.unpack stderr )
 
 
 -- | See <http://www.fast-downward.org/Doc/SearchEngine>
