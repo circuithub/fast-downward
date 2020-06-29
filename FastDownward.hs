@@ -600,70 +600,77 @@ solve cfg ops tests = do
               Seq.fromList $ Data.Foldable.toList axioms
           }
 
-    planFilePath <-
-      liftIO ( emptySystemTempFile "sas_plan" )
+    if null goal
+    then pure (Solved (Solution
+        { sas = plan
+        , operators = mempty
+        , stepIndices = mempty
+        }))
+    else do
+        planFilePath <-
+          liftIO ( emptySystemTempFile "sas_plan" )
 
-    ( exitCode, stdout, stderr ) <-
-      liftIO
-        ( Exec.callFastDownward
-            Exec.Options
-              { fastDownward = "downward"
-              , problem = plan
-              , planFilePath = planFilePath
-              , searchConfiguration = cfg
-              }
-        )
+        ( exitCode, stdout, stderr ) <-
+          liftIO
+            ( Exec.callFastDownward
+                Exec.Options
+                  { fastDownward = "downward"
+                  , problem = plan
+                  , planFilePath = planFilePath
+                  , searchConfiguration = cfg
+                  }
+            )
 
-    case exitCode of
-      ExitFailure 11 ->
-        return Unsolvable
+        case exitCode of
+          ExitFailure 11 ->
+            return Unsolvable
 
-      ExitFailure 12 ->
-        return UnsolvableIncomplete
+          ExitFailure 12 ->
+            return UnsolvableIncomplete
 
-      ExitFailure 22 ->
-        return OutOfMemory
+          ExitFailure 22 ->
+            return OutOfMemory
 
-      ExitFailure 23 ->
-        return OutOfTime
+          ExitFailure 23 ->
+            return OutOfTime
 
-      ExitFailure 32 ->
-        return CriticalError
+          ExitFailure 32 ->
+            return CriticalError
 
-      ExitFailure 33 ->
-        return InputError
+          ExitFailure 33 ->
+            return InputError
 
-      ExitFailure 34 ->
-        return Unsupported
+          ExitFailure 34 ->
+            return Unsupported
 
-      ExitFailure other ->
-        return ( Crashed stdout stderr ( ExitFailure other ) )
+          ExitFailure other ->
+            return ( Crashed stdout stderr ( ExitFailure other ) )
 
-      ExitSuccess -> liftIO $ do
-        planText <-
-          Data.Text.Lazy.IO.readFile planFilePath
+          ExitSuccess -> liftIO $ do
+            planText <-
+              Data.Text.Lazy.IO.readFile planFilePath
 
-        let
-          stepIndices =
-            map                           -- Read "(op42)" as 42
-              ( read
-                  . Data.Text.Lazy.unpack
-                  . Data.Text.Lazy.init   -- keep everything up to ")"
-                  . Data.Text.Lazy.drop 3 -- drop "(op"
+            let
+              stepIndices =
+                map                           -- Read "(op42)" as 42
+                  ( read
+                      . Data.Text.Lazy.unpack
+                      . Data.Text.Lazy.init   -- keep everything up to ")"
+                      . Data.Text.Lazy.drop 3 -- drop "(op"
+                  )
+                  ( takeWhile
+                      ( "(" `Data.Text.Lazy.isPrefixOf` )
+                      ( Data.Text.Lazy.lines planText )
+                  )
+
+            return
+              ( Solved
+                  Solution
+                    { sas = plan
+                    , operators = IntMap.fromList ( zip [0..] ( map fst operators ) )
+                    , ..
+                    }
               )
-              ( takeWhile
-                  ( "(" `Data.Text.Lazy.isPrefixOf` )
-                  ( Data.Text.Lazy.lines planText )
-              )
-
-        return
-          ( Solved
-              Solution
-                { sas = plan
-                , operators = IntMap.fromList ( zip [0..] ( map fst operators ) )
-                , ..
-                }
-          )
 
 
 exhaustEffects
