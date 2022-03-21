@@ -3,7 +3,7 @@ cabal-version:
 name:
   fast-downward
 version:
-  0.2.1.0
+  0.2.2.0
 build-type:
   Simple
 synopsis:
@@ -57,7 +57,7 @@ library
     FastDownward.SAS.VariableIndex
     FastDownward.SAS.Version
   build-depends:
-    base         ^>= 4.11.1.0 || ^>= 4.12.0.0 || ^>= 4.13.0.0 || ^>= 4.14.0.0,
+    base         ^>= 4.11.1.0 || ^>= 4.12.0.0 || ^>= 4.13.0.0 || ^>= 4.14.0.0 || ^>= 4.15.0.0,
     containers   ^>= 0.5.11.0 || ^>= 0.6,
     mtl          ^>= 2.2.2,
     process      ^>= 1.6.3.0,
