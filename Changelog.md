@@ -1,3 +1,8 @@
+# 0.2.3.0 -- 2023-05-11
+
+* Support GHC 9.2 and 9.4
+* Support `text-2.0`
+
 # 0.2.2.0 -- 2022-03-21
 
 * Support GHC 9.0
